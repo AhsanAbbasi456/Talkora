@@ -48,7 +48,7 @@ export default function Home() {
   };
 
   return (
-    <div className={`h-screen w-full flex flex-col overflow-hidden bg-[var(--app-bg)] ${isLight ? "theme-light" : ""}`}>
+    <div className={`h-screen w-full flex flex-col overflow-hidden bg-(--app-bg) ${isLight ? "theme-light" : ""}`}>
       <TopBar
         isLight={isLight}
         onToggleTheme={() => setIsLight((v) => !v)}
@@ -57,7 +57,7 @@ export default function Home() {
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* Left: contact list — hidden on mobile once a chat is open */}
-        <div className={`w-full md:w-auto shrink-0 ${mobileOpen ? "hidden md:block" : "block"}`}>
+        <div className={mobileOpen ? "hidden md:block" : "block"}>
           <Sidebar
             activeChat={activeChat}
             setActiveChat={handleSelectChat}

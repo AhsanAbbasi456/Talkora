@@ -127,6 +127,36 @@ export default function Register() {
           </p>
         )}
 
+        {/* Profile Picture */}
+        <div className="mb-6">
+          <label className="flex items-center justify-center gap-3 cursor-pointer w-full">
+
+            {preview ? (
+              <img
+                src={preview}
+                alt="Profile preview"
+                className="w-12 h-12 rounded-full object-cover border-2 border-blue-500"
+              />
+            ) : (
+              <div className="w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-gray-500 text-xs">
+                Photo
+              </div>
+            )}
+
+            <span className="text-sm text-gray-400">
+              Upload profile picture (optional)
+            </span>
+
+            <input
+              type="file"
+              accept="image/*"
+              onChange={handleImageChange}
+              className="hidden"
+            />
+
+          </label>
+        </div>
+
         {/* Name */}
         <InputFields
           icon={<User size={18} />}
@@ -165,36 +195,6 @@ export default function Register() {
           onChange={handleChange}
           placeholder="Confirm password"
         />
-
-        {/* Profile Picture */}
-        <div className="mb-6">
-          <label className="flex items-center gap-3 cursor-pointer">
-
-            {preview ? (
-              <img
-                src={preview}
-                alt="Profile preview"
-                className="w-12 h-12 rounded-full object-cover border-2 border-blue-500"
-              />
-            ) : (
-              <div className="w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-gray-500 text-xs">
-                Photo
-              </div>
-            )}
-
-            <span className="text-sm text-gray-400">
-              Upload profile picture (optional)
-            </span>
-
-            <input
-              type="file"
-              accept="image/*"
-              onChange={handleImageChange}
-              className="hidden"
-            />
-
-          </label>
-        </div>
 
         {/* Register Button */}
         <button
