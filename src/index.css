@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+:root {
+	font-family: "Segoe UI", sans-serif;
+	color: var(--text-primary);
+	background: var(--app-bg);
+	font-synthesis: none;
+	text-rendering: optimizeLegibility;
+	--app-bg: #0F172A;
+	--panel-bg: #1E293B;
+	--border: #334155;
+	--input-bg: #0F172A;
+	--accent: #3B82F6;
+	--text-primary: #F8FAFC;
+	--text-secondary: #CBD5E1;
+	--text-muted: #94A3B8;
+	--status: #10B981;
+}
+
+.theme-light {
+	--app-bg: #F8FAFC;
+	--panel-bg: #FFFFFF;
+	--border: #CBD5E1;
+	--input-bg: #F1F5F9;
+	--accent: #2563EB;
+	--text-primary: #0F172A;
+	--text-secondary: #334155;
+	--text-muted: #64748B;
+	--status: #059669;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	min-width: 320px;
+	min-height: 100vh;
+	background: var(--app-bg);
+}
+
+button,
+input {
+	font: inherit;
+}
+
+.custom-scrollbar {
+	scrollbar-width: thin;
+	scrollbar-color: var(--border) transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+	width: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+	background: var(--border);
+	border-radius: 999px;
+	border: 2px solid transparent;
+	background-clip: padding-box;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+	background: var(--accent);
+	background-clip: padding-box;
+}
