@@ -12,6 +12,7 @@ import {
 import { useState, useRef, useEffect } from "react";
 import ChatBubble from "../ChatBubble/ChatBubble";
 import EmojiPicker from "../EmojiPicker/EmojiPicker";
+import AttachmentMenu from "../AttachmentMenu/AttachmentMenu";
 
 export default function ChatWindow({
   activeChat,
@@ -21,8 +22,11 @@ export default function ChatWindow({
 }) {
   const [input, setInput] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
   const pickerRef = useRef(null);
   const emojiButtonRef = useRef(null);
+  const attachRef = useRef(null);
+  const attachButtonRef = useRef(null);
 
   const handleSend = (e) => {
     e.preventDefault();
@@ -32,10 +36,23 @@ export default function ChatWindow({
     setShowEmojiPicker(false);
   };
 
+  const handleAttachFiles = (type, files) => {
+    // Wire this up to your actual upload/send logic
+    console.log("Selected via", type, files);
+    setShowAttachMenu(false);
+  };
+
+  const handleAttachAction = (actionId) => {
+    // Camera / Contact / Poll / Sticker — no real handler yet
+    console.log("Attachment action:", actionId);
+    setShowAttachMenu(false);
+  };
+
   useEffect(() => {
-    if (!showEmojiPicker) return;
+    if (!showEmojiPicker && !showAttachMenu) return;
     const handleClickOutside = (e) => {
       if (
+        showEmojiPicker &&
         pickerRef.current &&
         !pickerRef.current.contains(e.target) &&
         emojiButtonRef.current &&
@@ -43,10 +60,19 @@ export default function ChatWindow({
       ) {
         setShowEmojiPicker(false);
       }
+      if (
+        showAttachMenu &&
+        attachRef.current &&
+        !attachRef.current.contains(e.target) &&
+        attachButtonRef.current &&
+        !attachButtonRef.current.contains(e.target)
+      ) {
+        setShowAttachMenu(false);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [showEmojiPicker]);
+  }, [showEmojiPicker, showAttachMenu]);
 
   if (!activeChat) {
     return (
@@ -114,7 +140,21 @@ export default function ChatWindow({
 
       {/* Input */}
       <form onSubmit={handleSend} className="relative flex items-center gap-2 sm:gap-3 px-3 sm:px-5 py-3 border-t border-(--border) bg-(--panel-bg)">
-        <Paperclip className="hidden sm:block text-gray-400 cursor-pointer hover:text-white transition shrink-0" size={20} />
+        <button
+          ref={attachButtonRef}
+          type="button"
+          onClick={() => setShowAttachMenu((v) => !v)}
+          className={`hidden sm:flex items-center justify-center text-gray-400 hover:text-white transition shrink-0 ${showAttachMenu ? "text-(--accent)" : ""}`}
+          title="Attach"
+        >
+          <Paperclip size={20} />
+        </button>
+
+        {showAttachMenu && (
+          <div ref={attachRef} className="absolute bottom-full left-3 mb-2 z-30">
+            <AttachmentMenu onSelectFiles={handleAttachFiles} onAction={handleAttachAction} />
+          </div>
+        )}
 
         <button
           ref={emojiButtonRef}

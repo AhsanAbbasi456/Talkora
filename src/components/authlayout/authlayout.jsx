@@ -13,7 +13,7 @@ export default function AuthLayout({ activeTab, children }) {
 
       {/* Right side - Form card */}
       <div className="relative z-10 flex w-full lg:w-1/2 lg:ml-auto items-center justify-center lg:justify-end p-3 sm:p-6 bg-transparent min-h-screen lg:min-h-0">
-        <div className="w-full max-w-[540px] bg-[#11142d]/65 backdrop-blur-xl border border-white/15 rounded-2xl p-4 sm:p-7 shadow-2xl">
+        <div className="w-full max-w-lg bg-[#11142d]/65 backdrop-blur-xl border border-white/15 rounded-2xl p-4 sm:p-7 shadow-2xl">
           <div className="text-center mb-4 sm:mb-6">
             <h2 className="text-2xl font-bold text-white">
               {activeTab === "login" ? "Welcome Back" : "Create Account"}
