@@ -4,16 +4,17 @@ import backgroundImage from "../../assets/images/background.png";
 export default function AuthLayout({ activeTab, children }) {
   return (
     <div
-      className="min-h-screen w-full flex bg-cover bg-center bg-fixed"
+      className="relative min-h-screen w-full flex bg-cover bg-center bg-fixed"
       style={{
         backgroundImage: `linear-gradient(to right, rgba(15,10,31,0) 0%, rgba(15,10,31,0.02) 45%, rgba(15,10,31,0.35) 74%, rgba(15,10,31,0.72) 100%), url(${backgroundImage})`,
       }}
     >
+      <div className="absolute inset-0 bg-[#07111f]/35 lg:hidden" />
 
       {/* Right side - Form card */}
-      <div className="flex w-full lg:w-1/2 lg:ml-auto items-center justify-end p-6 bg-transparent">
-        <div className="w-full max-w-[540px] bg-[#11142d]/65 backdrop-blur-xl border border-white/15 rounded-2xl p-7 shadow-2xl">
-          <div className="text-center mb-6">
+      <div className="relative z-10 flex w-full lg:w-1/2 lg:ml-auto items-center justify-center lg:justify-end p-3 sm:p-6 bg-transparent min-h-screen lg:min-h-0">
+        <div className="w-full max-w-[540px] bg-[#11142d]/65 backdrop-blur-xl border border-white/15 rounded-2xl p-4 sm:p-7 shadow-2xl">
+          <div className="text-center mb-4 sm:mb-6">
             <h2 className="text-2xl font-bold text-white">
               {activeTab === "login" ? "Welcome Back" : "Create Account"}
             </h2>
@@ -25,7 +26,7 @@ export default function AuthLayout({ activeTab, children }) {
           </div>
 
           {/* Tabs */}
-          <div className="flex border-b border-white/10 mb-6">
+          <div className="flex border-b border-white/10 mb-4 sm:mb-6">
             <Link
               to="/login"
               className={`flex-1 text-center pb-3 font-medium text-sm transition ${
