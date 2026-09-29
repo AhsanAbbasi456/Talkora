@@ -1,0 +1,76 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id            Int      @id @default(autoincrement())
+  name          String
+  email         String   @unique
+  password      String
+  emailVerified Boolean  @default(false)
+  avatarUrl     String?
+  about         String?  @default("Hey there! I am using Talkora.")
+  themeMode     String   @default("system")
+  isOnline      Boolean  @default(false)
+  lastSeen      DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  otps                OtpVerification[]
+  conversationMembers ConversationMember[]
+  sentMessages        Message[] @relation("SentMessages")
+  receivedMessages    Message[] @relation("ReceivedMessages")
+}
+
+model OtpVerification {
+  id        Int      @id @default(autoincrement())
+  email     String
+  otpHash   String
+  purpose   String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user   User? @relation(fields: [userId], references: [id])
+  userId Int?
+}
+
+model Conversation {
+  id            Int       @id @default(autoincrement())
+  createdAt     DateTime  @default(now())
+  lastMessageAt DateTime?
+
+  members  ConversationMember[]
+  messages Message[]
+}
+
+model ConversationMember {
+  conversationId Int
+  userId         Int
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, userId])
+}
+
+model Message {
+  id             Int      @id @default(autoincrement())
+  conversationId Int
+  senderId       Int
+  receiverId     Int
+  body           String
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  sender User @relation("SentMessages", fields: [senderId], references: [id])
+
+  receiver User @relation("ReceivedMessages", fields: [receiverId], references: [id])
+
+  @@index([conversationId, createdAt])
+}

@@ -1,0 +1,53 @@
+import logo from "../../assets/images/logo.png";
+import { Bell, Settings, PanelLeft } from "lucide-react";
+
+export default function TopBar({
+  onToggleSidebar,
+  onOpenSettings,
+}) {
+  return (
+    <header className="h-12 w-full flex items-center justify-between px-2 sm:px-4 bg-(--panel-bg) border-b border-(--border) shrink-0">
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+        <button
+          type="button"
+          onClick={onToggleSidebar}
+          className="rounded-lg p-2 text-(--text-muted) hover:bg-(--border) hover:text-(--text-primary) transition shrink-0"
+          style={{ cursor: "ew-resize" }}
+        >
+          <PanelLeft size={18} />
+        </button>
+
+        <img
+          src={logo}
+          alt="Talkora"
+          className="h-8 w-auto max-w-24 object-contain object-left shrink-0"
+        />
+
+        <span className="h-5 w-px bg-(--border)" />
+
+        <span className="text-sm font-bold tracking-[0.04em] text-(--text-primary) border-l-2 border-(--accent) pl-2 truncate">
+          Talkora
+        </span>
+      </div>
+
+      <div className="flex items-center gap-1 sm:gap-2 text-(--text-muted) shrink-0">
+        <button
+          type="button"
+          className="hidden sm:block rounded-lg p-2 hover:bg-(--border) hover:text-(--text-primary) transition"
+          title="Notifications"
+        >
+          <Bell size={18} />
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          className="hidden sm:block rounded-lg p-2 hover:bg-(--border) hover:text-(--text-primary) transition"
+          title="Settings"
+        >
+          <Settings size={18} />
+        </button>
+      </div>
+    </header>
+  );
+}

@@ -1,0 +1,10 @@
+{
+  "tailwindCSS.lint.cssConflict": "off",
+  "tailwindCSS.lint.invalidApply": "off",
+  "tailwindCSS.lint.invalidConfigPath": "off",
+  "tailwindCSS.lint.invalidTailwindDirective": "off",
+  "tailwindCSS.lint.invalidScreen": "off",
+  "[css]": {
+    "editor.formatOnSave": false
+  }
+}

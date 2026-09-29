@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
+    "dev": "nodemon index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -10,11 +11,22 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
     "bcrypt": "^6.0.0",
+    "cloudinary": "^1.41.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "joi": "^18.2.9",
     "jsonwebtoken": "^9.0.3",
-    "mongoose": "^9.9.3"
+    "multer": "^2.4.0",
+    "multer-storage-cloudinary": "^4.0.0",
+    "nodemailer": "^10.0.3",
+    "pg": "^8.23.0",
+    "prisma": "^7.10.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
   }
 }
