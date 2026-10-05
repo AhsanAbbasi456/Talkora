@@ -24,6 +24,22 @@ model User {
   conversationMembers ConversationMember[]
   sentMessages        Message[] @relation("SentMessages")
   receivedMessages    Message[] @relation("ReceivedMessages")
+  reactions           Reaction[]       
+  notifications       Notification[] 
+}
+model Notification {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  type      String
+  title     String
+  body      String?
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
 }
 
 model OtpVerification {
@@ -51,6 +67,8 @@ model Conversation {
 model ConversationMember {
   conversationId Int
   userId         Int
+  clearedAt      DateTime?
+  hidden         Boolean   @default(false)
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -59,18 +77,46 @@ model ConversationMember {
 }
 
 model Message {
-  id             Int      @id @default(autoincrement())
-  conversationId Int
-  senderId       Int
-  receiverId     Int
-  body           String
-  createdAt      DateTime @default(now())
+  id                 Int       @id @default(autoincrement())
+  conversationId     Int
+  senderId           Int
+  receiverId         Int
+  body               String
+  createdAt          DateTime  @default(now())
+  deletedForEveryone Boolean   @default(false)
+  deletedAt          DateTime?
+  deletedFor         Int[]     @default([])
+
+  // NEW: read receipts and edit
+  readAt             DateTime?
+  editedAt           DateTime?
+
+  // NEW: reply
+  replyToId          Int?
+  replyTo            Message?  @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies            Message[] @relation("MessageReplies")
+
+  // NEW: reactions
+  reactions          Reaction[]
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-
-  sender User @relation("SentMessages", fields: [senderId], references: [id])
-
-  receiver User @relation("ReceivedMessages", fields: [receiverId], references: [id])
+  sender       User         @relation("SentMessages", fields: [senderId], references: [id])
+  receiver     User         @relation("ReceivedMessages", fields: [receiverId], references: [id])
 
   @@index([conversationId, createdAt])
+  @@index([replyToId])
+}
+
+// NEW
+model Reaction {
+  id        Int      @id @default(autoincrement())
+  emoji     String
+  messageId Int
+  userId    Int
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
 }

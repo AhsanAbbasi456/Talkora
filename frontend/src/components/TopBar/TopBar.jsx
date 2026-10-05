@@ -4,6 +4,7 @@ import { Bell, Settings, PanelLeft } from "lucide-react";
 export default function TopBar({
   onToggleSidebar,
   onOpenSettings,
+  totalUnreadCount = 0,
 }) {
   return (
     <header className="h-12 w-full flex items-center justify-between px-2 sm:px-4 bg-(--panel-bg) border-b border-(--border) shrink-0">
@@ -33,10 +34,15 @@ export default function TopBar({
       <div className="flex items-center gap-1 sm:gap-2 text-(--text-muted) shrink-0">
         <button
           type="button"
-          className="hidden sm:block rounded-lg p-2 hover:bg-(--border) hover:text-(--text-primary) transition"
+          className="hidden sm:block relative rounded-lg p-2 hover:bg-(--border) hover:text-(--text-primary) transition"
           title="Notifications"
         >
           <Bell size={18} />
+          {totalUnreadCount > 0 && (
+            <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-[#25D366] text-[9px] font-bold text-[#06230f] flex items-center justify-center border border-(--panel-bg)">
+              {totalUnreadCount > 99 ? "99+" : totalUnreadCount}
+            </span>
+          )}
         </button>
 
         <button

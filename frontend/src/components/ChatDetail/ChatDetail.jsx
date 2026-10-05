@@ -2,14 +2,16 @@ import { useState, useEffect } from "react";
 import { useSelector } from "react-redux";
 import { Bell, Ban, Image as ImageIcon, X } from "lucide-react";
 import { getAvatarColor } from "../../utils/avatarColor";
+import DeleteChatDialog from "../DeleteChatDialog/DeleteChatDialog";
 
 const API_BASE_URL = "http://localhost:3000/api";
 const DEFAULT_ABOUT = "Hey there! I am using Talkora.";
 
-export default function ChatDetails({ activeChat, onClose }) {
+export default function ChatDetails({ activeChat, onClose, onDeleteChat }) {
   const { token } = useSelector((state) => state.auth);
 
   const [about, setAbout] = useState(activeChat?.about || DEFAULT_ABOUT);
+  const [deleteMode, setDeleteMode] = useState(null);
 
   // ==========================================
   // FETCH LATEST "ABOUT" WHEN PANEL OPENS
@@ -129,11 +131,35 @@ export default function ChatDetails({ activeChat, onClose }) {
           Mute notifications
         </button>
 
-        <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-red-400 hover:bg-red-500/10 transition">
+        <button
+          type="button"
+          onClick={() => setDeleteMode("clear")}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-gray-300 hover:bg-white/5 transition"
+        >
+          <X size={16} />
+          Clear chat
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setDeleteMode("delete")}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-red-400 hover:bg-red-500/10 transition"
+        >
           <Ban size={16} />
-          Block contact
+          Delete chat
         </button>
       </div>
+
+      <DeleteChatDialog
+        name={activeChat.name}
+        mode={deleteMode}
+        onConfirm={() => {
+          if (!deleteMode || !onDeleteChat) return;
+          onDeleteChat(deleteMode);
+          setDeleteMode(null);
+        }}
+        onCancel={() => setDeleteMode(null)}
+      />
     </div>
   );
 }

@@ -6,11 +6,12 @@ async function getConversations(req, res) {
 
   const conversations = await prisma.conversation.findMany({
     where: {
-      members: { some: { userId } },
+      // CHANGED: skip chats this user deleted
+      members: { some: { userId, hidden: false } },
     },
     include: {
+      // CHANGED: load all members (we need my own row for clearedAt)
       members: {
-        where: { userId: { not: userId } },
         include: {
           user: {
             select: { id: true, name: true, email: true, avatarUrl: true, about: true },
@@ -18,6 +19,8 @@ async function getConversations(req, res) {
         },
       },
       messages: {
+        // NEW: skip messages I deleted "for me"
+        where: { NOT: { deletedFor: { has: userId } } },
         orderBy: { createdAt: "desc" },
         take: 1,
       },
@@ -25,12 +28,30 @@ async function getConversations(req, res) {
     orderBy: { lastMessageAt: "desc" },
   });
 
-  const result = conversations.map((c) => ({
-    conversationId: c.id,
-    otherUser: c.members[0]?.user,
-    lastMessage: c.messages[0]?.body ?? null,
-    lastMessageAt: c.messages[0]?.createdAt ?? null,
-  }));
+  const result = conversations.map((c) => {
+    // NEW: find my row and the other person's row
+    const mine = c.members.find((m) => m.userId === userId);
+    const other = c.members.find((m) => m.userId !== userId);
+
+    let last = c.messages[0] ?? null;
+
+    // NEW: ignore a last message from before I cleared the chat
+    if (last && mine?.clearedAt && last.createdAt <= mine.clearedAt) {
+      last = null;
+    }
+
+    return {
+      conversationId: c.id,
+      otherUser: other?.user,
+      // NEW: show a placeholder if it was deleted for everyone
+      lastMessage: last
+        ? last.deletedForEveryone
+          ? "This message was deleted"
+          : last.body
+        : null,
+      lastMessageAt: last?.createdAt ?? null,
+    };
+  });
 
   res.json(result);
 }
@@ -74,7 +95,16 @@ async function startConversation(req, res) {
     },
   });
 
-  if (existing) return res.json({ conversationId: existing.id });
+  if (existing) {
+    // NEW: if I had deleted this chat, show it in my list again.
+    // Old messages stay hidden because clearedAt is kept.
+    await prisma.conversationMember.updateMany({
+      where: { conversationId: existing.id, userId: me },
+      data: { hidden: false },
+    });
+
+    return res.json({ conversationId: existing.id });
+  }
 
   const conversation = await prisma.conversation.create({
     data: {

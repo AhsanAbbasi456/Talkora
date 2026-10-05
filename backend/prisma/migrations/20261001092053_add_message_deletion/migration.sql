@@ -1,0 +1,8 @@
+-- AlterTable
+ALTER TABLE "Message" ADD COLUMN     "deletedAt" TIMESTAMP(3),
+ADD COLUMN     "deletedFor" INTEGER[] DEFAULT ARRAY[]::INTEGER[],
+ADD COLUMN     "deletedForEveryone" BOOLEAN NOT NULL DEFAULT false;
+
+-- AlterTable
+ALTER TABLE "User" ADD COLUMN     "isOnline" BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN     "lastSeen" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;

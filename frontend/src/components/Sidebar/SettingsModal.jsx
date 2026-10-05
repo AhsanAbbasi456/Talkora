@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
+import { useNavigate } from "react-router-dom";
 import {
   User,
   UserPlus,
@@ -17,9 +18,13 @@ import {
   Sun,
   Moon,
   Monitor,
+  LogOut,
 } from "lucide-react";
 import { getAvatarColor } from "../../utils/avatarColor";
-import { updateUser } from "../../redux/authSlice";
+import {
+  logoutUser,
+  updateUser,
+} from "../../redux/authSlice";
 import {
   startApiLoading,
   stopApiLoading,
@@ -31,7 +36,13 @@ const MAX_SIZE = 2 * 1024 * 1024; // 2 MB
 const DEFAULT_ABOUT = "Hey there! I am using Talkora.";
 
 /* ---------------- EDITABLE FIELD (pencil -> input -> tick) ---------------- */
-function EditableField({ label, value, maxLength, minLength = 1, onSave }) {
+function EditableField({
+  label,
+  value,
+  maxLength,
+  minLength = 1,
+  onSave,
+}) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const [saving, setSaving] = useState(false);
@@ -157,7 +168,10 @@ function ProfileTab({ overlayRef }) {
   const { user, token } = useSelector((state) => state.auth);
 
   const [photoBusy, setPhotoBusy] = useState("");
-  const [message, setMessage] = useState({ type: "", text: "" });
+  const [message, setMessage] = useState({
+    type: "",
+    text: "",
+  });
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [viewOpen, setViewOpen] = useState(false);
@@ -169,7 +183,8 @@ function ProfileTab({ overlayRef }) {
   const initial = user?.name?.charAt(0)?.toUpperCase() || "U";
 
   useEffect(() => {
-    const anyOpen = menuOpen || viewOpen || confirmOpen;
+    const anyOpen =
+      menuOpen || viewOpen || confirmOpen;
 
     overlayRef.current = anyOpen;
 
@@ -185,7 +200,8 @@ function ProfileTab({ overlayRef }) {
 
     window.addEventListener("keydown", onKey);
 
-    return () => window.removeEventListener("keydown", onKey);
+    return () =>
+      window.removeEventListener("keydown", onKey);
   }, [menuOpen, viewOpen, confirmOpen, overlayRef]);
 
   useEffect(() => {
@@ -830,7 +846,8 @@ function PasswordTab() {
 
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] =
+    useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState({
     type: "",
@@ -1058,13 +1075,29 @@ function PasswordTab() {
 }
 
 /* ---------------- APPEARANCE TAB ---------------- */
+
 // themeMode: "system" | "light" | "dark"
 // onThemeChange(mode): call to switch theme
-function AppearanceTab({ themeMode, onThemeChange }) {
+function AppearanceTab({
+  themeMode,
+  onThemeChange,
+}) {
   const options = [
-    { id: "system", label: "System", Icon: Monitor },
-    { id: "light", label: "Light", Icon: Sun },
-    { id: "dark", label: "Dark", Icon: Moon },
+    {
+      id: "system",
+      label: "System",
+      Icon: Monitor,
+    },
+    {
+      id: "light",
+      label: "Light",
+      Icon: Sun,
+    },
+    {
+      id: "dark",
+      label: "Dark",
+      Icon: Moon,
+    },
   ];
 
   return (
@@ -1120,23 +1153,38 @@ export default function SettingsModal({
   open,
   onClose,
   onContactAdded,
-  themeMode,      // "system" | "light" | "dark"
-  onThemeChange,  // (mode) => void
+  themeMode,
+  onThemeChange,
 }) {
   const [tab, setTab] = useState("profile");
+  const [logoutConfirmOpen, setLogoutConfirmOpen] =
+    useState(false);
 
   const overlayRef = useRef(false);
+
+  // Logout
+  const dispatch = useDispatch();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    setLogoutConfirmOpen(false);
+    dispatch(logoutUser());
+    navigate("/login");
+  };
 
   useEffect(() => {
     if (!open) return;
 
     const onKey = (e) => {
-      if (
-        e.key !== "Escape" ||
-        overlayRef.current
-      ) {
+      if (e.key !== "Escape") return;
+
+      // Close the logout dialog first
+      if (logoutConfirmOpen) {
+        setLogoutConfirmOpen(false);
         return;
       }
+
+      if (overlayRef.current) return;
 
       onClose();
     };
@@ -1146,7 +1194,7 @@ export default function SettingsModal({
     return () => {
       window.removeEventListener("keydown", onKey);
     };
-  }, [open, onClose]);
+  }, [open, onClose, logoutConfirmOpen]);
 
   if (!open) return null;
 
@@ -1178,7 +1226,7 @@ export default function SettingsModal({
       <div className="relative flex flex-col sm:flex-row w-full h-full">
 
         {/* Left menu */}
-        <nav className="sm:w-64 shrink-0 p-3 sm:p-6 border-b sm:border-b-0 sm:border-r border-(--border) flex sm:block gap-1">
+        <nav className="sm:w-64 shrink-0 p-3 sm:p-6 border-b sm:border-b-0 sm:border-r border-(--border) flex sm:flex-col gap-1">
           <h2 className="hidden sm:block px-2 mb-4 text-lg font-semibold text-(--text-primary)">
             Settings
           </h2>
@@ -1198,6 +1246,23 @@ export default function SettingsModal({
               {label}
             </button>
           ))}
+
+          {/* Logout */}
+          <div className="ml-auto shrink-0 sm:ml-0 sm:mt-auto sm:w-full sm:pt-3 sm:border-t border-(--border)">
+            <button
+              type="button"
+              onClick={() => setLogoutConfirmOpen(true)}
+              className="group w-full flex items-center gap-3 px-3.5 py-2.5 rounded-[10px] text-sm font-medium
+                         text-red-400 bg-red-500/5 border border-red-500/20
+                         hover:bg-red-500/15 hover:border-red-500/40 hover:text-red-300 transition-colors"
+            >
+              <LogOut
+                size={18}
+                className="transition-transform group-hover:translate-x-0.5"
+              />
+              Log out
+            </button>
+          </div>
         </nav>
 
         {/* Right content */}
@@ -1235,6 +1300,50 @@ export default function SettingsModal({
         >
           <X size={22} />
         </button>
+
+        {/* Logout confirmation */}
+        {logoutConfirmOpen && (
+          <div
+            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setLogoutConfirmOpen(false)}
+          >
+            <div
+              className="w-full max-w-[320px] bg-(--panel-bg) border border-(--border) rounded-2xl p-6 text-center"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mx-auto mb-3.5 w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center">
+                <LogOut size={22} className="text-red-400" />
+              </div>
+
+              <h4 className="text-base font-semibold text-(--text-primary)">
+                Log out of your account?
+              </h4>
+
+              <p className="text-sm text-(--text-muted) mt-1.5">
+               You can sign in again anytime to continue using Talkora.
+              </p>
+
+              <div className="flex gap-2.5 mt-5">
+                <button
+                  type="button"
+                  autoFocus
+                  onClick={() => setLogoutConfirmOpen(false)}
+                  className="flex-1 py-2.5 rounded-[10px] text-sm text-(--text-primary) border border-(--border) hover:bg-(--input-bg) transition"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="flex-1 py-2.5 rounded-[10px] text-sm font-medium bg-red-500 text-white hover:bg-red-600 transition"
+                >
+                  Log out
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
