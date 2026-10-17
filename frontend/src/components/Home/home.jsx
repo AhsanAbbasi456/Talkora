@@ -1,18 +1,50 @@
 import { useEffect, useRef, useState } from "react";
-import socket from "../../socket";
 import { useSelector } from "react-redux";
+import socket from "../../socket";
+import { listen } from "../../utils/socketListen";
 import TopBar from "../TopBar/TopBar";
 import Sidebar from "../Sidebar/Sidebar";
 import SettingsModal from "../Sidebar/SettingsModal";
 import ChatWindow from "../ChatWindow/ChatWindow";
 import ChatDetails from "../ChatDetail/ChatDetail";
+import GroupInfo from "../GroupInfo/GroupInfo";
 import Loader from "../Loader/Loader";
-import { getAvatarColor } from "../../utils/avatarColor"; // NEW
+import { getAvatarColor } from "../../utils/avatarColor";
 
-const API_BASE_URL = "http://localhost:3000/api";
+const API_BASE_URL = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api`;
 
-function getSystemPrefersLight() {
-  return !window.matchMedia("(prefers-color-scheme: dark)").matches;
+const prefersLight = () => !window.matchMedia("(prefers-color-scheme: dark)").matches;
+
+const getInitials = (name = "") =>
+  name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase();
+
+function IncomingToast({ toast }) {
+  return (
+    <div className="pointer-events-none fixed right-4 top-4 z-50 w-[320px] max-w-[calc(100vw-2rem)] animate-[fadeIn_0.2s_ease-out]">
+      <div className="flex items-center gap-3 rounded-2xl border border-(--border) bg-(--panel-bg) p-3 shadow-[0_10px_30px_rgba(0,0,0,0.25)]">
+        <div
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-[#F8FAFC]"
+          style={{ backgroundColor: getAvatarColor(toast.senderId) }}
+        >
+          {toast.initials}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-3">
+            <span className="truncate text-sm font-semibold text-(--text-primary)">{toast.senderName}</span>
+            <span className="text-[10px] text-(--text-muted)">
+              {new Date(toast.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            </span>
+          </div>
+          <p className="truncate text-sm text-(--text-secondary)">{toast.body}</p>
+        </div>
+
+        <div className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[#25D366] px-1 text-[10px] font-bold text-[#06230f]">
+          {toast.count > 99 ? "99+" : toast.count}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function Home() {
@@ -20,279 +52,19 @@ export default function Home() {
 
   const [activeChat, setActiveChat] = useState(null);
   const [showDetails, setShowDetails] = useState(false);
-  const [themeMode, setThemeMode] = useState(
-    user?.themeMode || "system"
-  );
+  const [themeMode, setThemeMode] = useState(user?.themeMode || "system");
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [totalUnreadCount, setTotalUnreadCount] = useState(0);
   const [incomingToast, setIncomingToast] = useState(null);
+  const [isLight, setIsLight] = useState(() => (themeMode === "system" ? prefersLight() : themeMode === "light"));
+
   const incomingToastRef = useRef(null);
-  const originalDocumentTitleRef = useRef(document.title);
+  const originalTitleRef = useRef(document.title);
 
-  // ==========================================
-  // INCOMING MESSAGE NOTIFICATION
-  // ==========================================
-
-  const requestNotificationPermission = async () => {
-    if (!("Notification" in window)) {
-      return;
-    }
-
-    if (Notification.permission === "default") {
-      await Notification.requestPermission();
-    }
-  };
-
-  const showIncomingMessageToast = (message, count = 1) => {
-    const senderId = Number(message?.senderId);
-    const senderName =
-      message?.senderName ||
-      (activeChat && Number(activeChat.id) === senderId
-        ? activeChat.name || activeChat.otherUser?.name || "New message"
-        : "New message");
-
-    const trimmedBody =
-      typeof message?.body === "string"
-        ? message.body.trim()
-        : "";
-
-    const nextToast = {
-      id: Date.now() + Math.random(),
-      senderId, // NEW: used for the avatar color
-      senderName,
-      body: trimmedBody || "New message",
-      createdAt: message?.createdAt || new Date().toISOString(),
-      count: Number.isFinite(Number(count)) && Number(count) > 0 ? Number(count) : 1,
-      initials: senderName
-        .split(" ")
-        .map((part) => part[0])
-        .join("")
-        .slice(0, 2)
-        .toUpperCase(),
-    };
-
-    clearTimeout(incomingToastRef.current);
-    setIncomingToast(nextToast);
-    incomingToastRef.current = setTimeout(() => {
-      setIncomingToast(null);
-      if (document.title.includes("New message")) {
-        document.title = originalDocumentTitleRef.current;
-      }
-    }, 5000);
-
-    if (document.visibilityState !== "visible") {
-      document.title = `New message • ${originalDocumentTitleRef.current}`;
-    }
-
-    if ("Notification" in window && Notification.permission === "granted") {
-      const browserNotification = new Notification(senderName, {
-        body: trimmedBody || "New message",
-        tag: `talkora-message-${message?.id || senderId}`,
-      });
-
-      setTimeout(() => browserNotification.close(), 5000);
-    }
-  };
-
-  useEffect(() => {
-    if (!("Notification" in window)) {
-      return;
-    }
-
-    if (Notification.permission === "default") {
-      requestNotificationPermission();
-    }
-  }, []);
-
-  useEffect(() => {
-    const handleNewMessage = (message) => {
-      console.log("Incoming socket message:", message);
-      setRefreshKey((value) => value + 1);
-
-      if (document.visibilityState === "visible" && activeChat?.id === message?.senderId) {
-        return;
-      }
-
-      showIncomingMessageToast(message);
-    };
-
-    const handleOfflineNotification = (payload) => {
-      const message = {
-        id: payload?.id,
-        senderId: payload?.senderId,
-        receiverId: payload?.receiverId,
-        senderName: payload?.senderName,
-        body: payload?.body,
-        createdAt: payload?.createdAt,
-      };
-
-      if (document.visibilityState === "visible" && activeChat?.id === payload?.senderId) {
-        return;
-      }
-
-      showIncomingMessageToast(message, payload?.count || 1);
-    };
-
-    socket.on("newMessage", handleNewMessage);
-    socket.on("offlineMessageNotification", handleOfflineNotification);
-
-    return () => {
-      socket.off("newMessage", handleNewMessage);
-      socket.off("offlineMessageNotification", handleOfflineNotification);
-    };
-  }, [activeChat?.id, activeChat?.name, activeChat?.otherUser?.name]);
-
-  // ==========================================
-  // SOCKET CONNECTION
-  // ==========================================
-
-  useEffect(() => {
-    if (!token) {
-      socket.disconnect();
-      return;
-    }
-
-    if (socket.connected) {
-      socket.disconnect();
-    }
-
-    socket.auth = {
-      token: token,
-    };
-
-    const handleConnect = () => {
-      console.log("Socket connected:", socket.id);
-    };
-
-    const handleConnectError = (error) => {
-      console.error(
-        "Socket connection error:",
-        error.message
-      );
-    };
-
-    socket.on("connect", handleConnect);
-    socket.on("connect_error", handleConnectError);
-
-    socket.connect();
-
-    return () => {
-      socket.off("connect", handleConnect);
-      socket.off("connect_error", handleConnectError);
-
-      if (socket.connected) {
-        socket.disconnect();
-      }
-    };
-  }, [token]);
-
-  // ==========================================
-  // MESSAGE SENT
-  // ==========================================
-
-  useEffect(() => {
-    const handleMessageSent = (message) => {
-      console.log("Message sent successfully:", message);
-      setRefreshKey((value) => value + 1);
-    };
-
-    socket.on("messageSent", handleMessageSent);
-
-    return () => {
-      socket.off("messageSent", handleMessageSent);
-    };
-  }, []);
-
-  // ==========================================
-  // LOAD USER THEME
-  // ==========================================
-
-  useEffect(() => {
-    if (user?.themeMode) {
-      setThemeMode(user.themeMode);
-    }
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
-
-  const [isLight, setIsLight] = useState(() =>
-    themeMode === "system"
-      ? getSystemPrefersLight()
-      : themeMode === "light"
-  );
-
-  // ==========================================
-  // THEME MODE
-  // ==========================================
-
-  useEffect(() => {
-    if (themeMode !== "system") {
-      setIsLight(themeMode === "light");
-      return;
-    }
-
-    setIsLight(getSystemPrefersLight());
-
-    const mql = window.matchMedia(
-      "(prefers-color-scheme: dark)"
-    );
-
-    const handleChange = () => {
-      setIsLight(getSystemPrefersLight());
-    };
-
-    mql.addEventListener("change", handleChange);
-
-    return () => {
-      mql.removeEventListener("change", handleChange);
-    };
-  }, [themeMode]);
-
-  // ==========================================
-  // THEME CHANGE
-  // ==========================================
-
-  const handleThemeChange = async (mode) => {
-    setThemeMode(mode);
-
-    if (!token) {
-      return;
-    }
-
-    try {
-      await fetch(`${API_BASE_URL}/profile`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          themeMode: mode,
-        }),
-      });
-    } catch (error) {
-      console.error(
-        "Failed to save theme to your account:",
-        error
-      );
-    }
-  };
-
-  // ==========================================
-  // SELECT CHAT
-  // ==========================================
-
-  const handleSelectChat = (chat) => {
-    setActiveChat(chat);
-    setMobileOpen(true);
-  };
-
-  // ==========================================
-  // CLOSE CHAT
-  // ==========================================
+  const refreshSidebar = () => setRefreshKey((value) => value + 1);
 
   const closeChat = () => {
     setActiveChat(null);
@@ -300,138 +72,248 @@ export default function Home() {
     setShowDetails(false);
   };
 
-  // ==========================================
-  // DELETE / CLEAR CHAT
-  // ==========================================
-
-  const handleDeleteChat = (mode) => {
-    if (!activeChat?.id || !token) {
-      return;
-    }
-
-    if (!socket.connected) {
-      console.error("Socket is not connected");
-      return;
-    }
-
-    socket.emit("deleteChat", {
-      userId: activeChat.id,
-      mode,
-    });
+  const handleSelectChat = (chat) => {
+    setActiveChat(chat);
+    setMobileOpen(true);
   };
 
+  // ---------- incoming message toast ----------
+  const showIncomingMessageToast = (message, count = 1) => {
+    const senderId = Number(message?.senderId);
+    const directOpen = activeChat && activeChat.type !== "GROUP" && Number(activeChat.id) === senderId;
+    const member =
+      activeChat?.type === "GROUP"
+        ? activeChat.members?.find((m) => Number(m.userId) === senderId)
+        : null;
+
+    const senderName =
+      message?.senderName ||
+      (directOpen ? activeChat.name || activeChat.otherUser?.name : null) ||
+      member?.user?.name ||
+      "New message";
+
+    const body = (typeof message?.body === "string" && message.body.trim()) || "New message";
+
+    const groupOpen =
+      activeChat?.type === "GROUP" &&
+      Number(activeChat.conversationId) === Number(message?.conversationId);
+    const isGroupMessage = message?.conversationType === "GROUP" || groupOpen;
+
+    const title = isGroupMessage
+      ? message?.conversationName || (groupOpen ? activeChat.name : null) || "Group message"
+      : senderName;
+    const text = isGroupMessage && senderName !== title ? `${senderName}: ${body}` : body;
+
+    clearTimeout(incomingToastRef.current);
+
+    setIncomingToast({
+      id: Date.now() + Math.random(),
+      senderId,
+      senderName: title,
+      body: text,
+      createdAt: message?.createdAt || new Date().toISOString(),
+      count: Number(count) > 0 ? Number(count) : 1,
+      initials: getInitials(senderName),
+    });
+
+    incomingToastRef.current = setTimeout(() => {
+      setIncomingToast(null);
+      if (document.title.includes("New message")) document.title = originalTitleRef.current;
+    }, 5000);
+
+    if (document.visibilityState !== "visible") {
+      document.title = `New message • ${originalTitleRef.current}`;
+    }
+
+  }
+
+  // ---------- incoming + offline messages ----------
   useEffect(() => {
-    const handleChatDeleted = ({ userId, mode }) => {
-      if (!userId || !activeChat?.id) {
-        setRefreshKey((value) => value + 1);
-        return;
+    const isOpenChat = (senderId, conversationId) =>
+      document.visibilityState === "visible" &&
+      (activeChat?.type === "GROUP"
+        ? Number(activeChat.conversationId) === Number(conversationId)
+        : Number(activeChat?.id) === Number(senderId));
+
+    const onMessage = (message, count = 1) => {
+      refreshSidebar();
+      if (!isOpenChat(message?.senderId, message?.conversationId)) {
+        showIncomingMessageToast(message, count);
       }
-
-      const isCurrentChat = Number(userId) === Number(activeChat.id);
-
-      if (isCurrentChat) {
-        if (mode === "delete") {
-          closeChat();
-        } else {
-          socket.emit("getMessages", {
-            userId: activeChat.id,
-          });
-        }
-      }
-
-      setRefreshKey((value) => value + 1);
     };
 
-    socket.on("chatDeleted", handleChatDeleted);
+    return listen({
+      newMessage: (message) => onMessage(message),
+      offlineMessageNotification: (payload) => onMessage(payload, payload?.count || 1),
+    });
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeChat?.id,
+    activeChat?.type,
+    activeChat?.conversationId,
+    activeChat?.name,
+    activeChat?.otherUser?.name,
+  ]);
+
+  // refresh the sidebar when my message is saved
+  useEffect(() => listen({ messageSent: refreshSidebar }), []);
+
+  // ---------- group live updates ----------
+  const applyGroup = (group) => {
+    setActiveChat((chat) =>
+      chat?.conversationId === group.conversationId
+        ? { ...chat, ...group, id: group.conversationId }
+        : chat
+    );
+    refreshSidebar();
+  };
+
+  useEffect(
+    () =>
+      listen({
+        groupUpdated: applyGroup,
+        addedToGroup: refreshSidebar,
+        removedFromGroup: ({ conversationId }) => {
+          setActiveChat((chat) => (chat?.conversationId === conversationId ? null : chat));
+          setShowDetails(false);
+          refreshSidebar();
+        },
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  // no chat open -> back to the chat list on mobile
+  useEffect(() => {
+    if (!activeChat) setMobileOpen(false);
+  }, [activeChat]);
+
+  // ---------- socket connection ----------
+  useEffect(() => {
+    if (!token) {
+      socket.disconnect();
+      return;
+    }
+
+    if (socket.connected) socket.disconnect();
+
+    socket.auth = { token };
+    const onConnectError = (error) => console.error("Socket connection error:", error.message);
+
+    socket.on("connect_error", onConnectError);
+    socket.connect();
 
     return () => {
-      socket.off("chatDeleted", handleChatDeleted);
+      socket.off("connect_error", onConnectError);
+      if (socket.connected) socket.disconnect();
     };
-  }, [activeChat?.id, token]);
+  }, [token]);
 
-  // ==========================================
-  // ESCAPE KEY
-  // ==========================================
+  // ---------- theme ----------
+  useEffect(() => {
+    if (user?.themeMode) setThemeMode(user.themeMode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   useEffect(() => {
-    const handleEscape = (event) => {
-      if (
-        event.key === "Escape" &&
-        activeChat &&
-        !settingsOpen
-      ) {
-        closeChat();
-      }
-    };
+    if (themeMode !== "system") {
+      setIsLight(themeMode === "light");
+      return;
+    }
 
-    window.addEventListener("keydown", handleEscape);
+    setIsLight(prefersLight());
 
-    return () => {
-      window.removeEventListener(
-        "keydown",
-        handleEscape
-      );
-    };
-  }, [activeChat, settingsOpen]);
+    const mql = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => setIsLight(prefersLight());
 
-  // ==========================================
-  // SEND MESSAGE THROUGH SOCKET.IO
-  // ==========================================
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [themeMode]);
+
+  const handleThemeChange = async (mode) => {
+    setThemeMode(mode);
+    if (!token) return;
+
+    try {
+      await fetch(`${API_BASE_URL}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ themeMode: mode }),
+      });
+    } catch (error) {
+      console.error("Failed to save theme to your account:", error);
+    }
+  };
+
+  // ---------- sending ----------
+  const emitIfReady = (event, payload) => {
+    if (!token || !socket.connected) {
+      return console.error("Cannot emit socket event: not connected");
+    }
+    socket.emit(event, payload);
+  };
 
   const handleSend = (text) => {
-    if (
-      !activeChat?.id ||
-      !token ||
-      !text.trim()
-    ) {
-      return;
+    const body = text?.trim();
+    if (!activeChat || !body) return;
+
+    const target =
+      activeChat.type === "GROUP"
+        ? { conversationId: Number(activeChat.conversationId) }
+        : { receiverId: Number(activeChat.id) };
+
+    if (!Number.isInteger(Object.values(target)[0])) {
+      return console.error("Chat id is missing or invalid:", activeChat);
     }
 
-    if (!socket.connected) {
-      console.error("Socket is not connected");
-      return;
-    }
-
-    socket.emit("sendMessage", {
-      receiverId: activeChat.id,
-      body: text.trim(),
-    });
+    emitIfReady("sendMessage", { ...target, body });
   };
 
-  // ==========================================
-  // UI
-  // ==========================================
+  const handleDeleteChat = (mode) => {
+    if (activeChat?.type !== "GROUP" && activeChat?.id) {
+      emitIfReady("deleteChat", { userId: activeChat.id, mode });
+    }
+  };
+
+  // ---------- chat deleted ----------
+  useEffect(
+    () =>
+      listen({
+        chatDeleted: ({ userId, mode }) => {
+          if (userId && activeChat?.id && Number(userId) === Number(activeChat.id)) {
+            if (mode === "delete") closeChat();
+            else socket.emit("getMessages", { userId: activeChat.id });
+          }
+          refreshSidebar();
+        },
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeChat?.id, token]
+  );
+
+  // ---------- Escape closes the chat ----------
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key === "Escape" && activeChat && !settingsOpen) closeChat();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeChat, settingsOpen]);
 
   return (
-    <div
-      className={`h-screen w-full flex flex-col overflow-hidden bg-(--app-bg) ${
-        isLight ? "theme-light" : ""
-      }`}
-    >
+    <div className={`h-screen w-full flex flex-col overflow-hidden bg-(--app-bg) ${isLight ? "theme-light" : ""}`}>
       <Loader />
 
       <TopBar
-        onToggleSidebar={() =>
-          setCollapsed((value) => !value)
-        }
-        onOpenSettings={() =>
-          setSettingsOpen(true)
-        }
+        onToggleSidebar={() => setCollapsed((value) => !value)}
+        onOpenSettings={() => setSettingsOpen(true)}
         totalUnreadCount={totalUnreadCount}
       />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
-        {/* ==========================================
-            SIDEBAR
-        ========================================== */}
-
-        <div
-          className={
-            mobileOpen
-              ? "hidden md:block"
-              : "block"
-          }
-        >
+        <div className={mobileOpen ? "hidden md:block" : "block"}>
           <Sidebar
             activeChat={activeChat}
             setActiveChat={handleSelectChat}
@@ -441,96 +323,50 @@ export default function Home() {
           />
         </div>
 
-        {/* ==========================================
-            CHAT WINDOW
-        ========================================== */}
-
-        <div
-          className={`flex-1 min-w-0 ${
-            mobileOpen
-              ? "flex"
-              : "hidden md:flex"
-          }`}
-        >
+        <div className={`flex-1 min-w-0 ${mobileOpen ? "flex" : "hidden md:flex"}`}>
           <ChatWindow
-            key={activeChat?.id || "empty"}
+            key={activeChat?.conversationId || activeChat?.id || "empty"}
             activeChat={activeChat}
             onSend={handleSend}
-            onShowDetails={() =>
-              setShowDetails(true)
-            }
+            onShowDetails={() => setShowDetails(true)}
             onBack={closeChat}
           />
         </div>
 
-        {/* ==========================================
-            CHAT DETAILS
-        ========================================== */}
-
-        {showDetails && (
-          <ChatDetails
-            activeChat={activeChat}
-            onClose={() =>
-              setShowDetails(false)
-            }
-            onDeleteChat={handleDeleteChat}
-          />
-        )}
+        {showDetails &&
+          (activeChat?.type === "GROUP" ? (
+            <GroupInfo chat={activeChat} onClose={() => setShowDetails(false)} onUpdate={applyGroup} />
+          ) : (
+            <ChatDetails
+              activeChat={activeChat}
+              onClose={() => setShowDetails(false)}
+              onDeleteChat={handleDeleteChat}
+            />
+          ))}
       </div>
 
-      {/* ==========================================
-          INCOMING MESSAGE TOAST (theme-aware)
-      ========================================== */}
-
-      {incomingToast && (
-        <div className="pointer-events-none fixed right-4 top-4 z-50 w-[320px] max-w-[calc(100vw-2rem)] animate-[fadeIn_0.2s_ease-out]">
-          <div className="flex items-center gap-3 rounded-2xl border border-(--border) bg-(--panel-bg) p-3 shadow-[0_10px_30px_rgba(0,0,0,0.25)]">
-            <div
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-[#F8FAFC]"
-              style={{
-                backgroundColor: getAvatarColor(incomingToast.senderId),
-              }}
-            >
-              {incomingToast.initials}
-            </div>
-
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between gap-3">
-                <span className="truncate text-sm font-semibold text-(--text-primary)">
-                  {incomingToast.senderName}
-                </span>
-                <span className="text-[10px] text-(--text-muted)">
-                  {new Date(incomingToast.createdAt).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </span>
-              </div>
-
-              <p className="truncate text-sm text-(--text-secondary)">
-                {incomingToast.body}
-              </p>
-            </div>
-
-            <div className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[#25D366] px-1 text-[10px] font-bold text-[#06230f]">
-              {incomingToast.count > 99 ? "99+" : incomingToast.count}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ==========================================
-          SETTINGS
-      ========================================== */}
+      {incomingToast && <IncomingToast toast={incomingToast} />}
 
       <SettingsModal
         open={settingsOpen}
-        onClose={() =>
-          setSettingsOpen(false)
-        }
+        onClose={() => setSettingsOpen(false)}
         onContactAdded={(chat) => {
           handleSelectChat(chat);
-          setRefreshKey((key) => key + 1);
+          refreshSidebar();
+          setSettingsOpen(false);
+        }}
+        onGroupCreated={(group) => {
+          handleSelectChat({
+            id: group.conversationId,
+            conversationId: group.conversationId,
+            type: "GROUP",
+            name: group.name,
+            description: group.description,
+            avatarUrl: group.avatarUrl,
+            createdBy: group.createdBy,
+            members: group.members,
+          });
+          refreshSidebar();
           setSettingsOpen(false);
         }}
         themeMode={themeMode}

@@ -1,1203 +1,792 @@
 const prisma = require("../config/prisma");
+const sanitizeMessage = require("../utils/sanitizeMessage"); // NEW
 
-const emitSocketError = (socket, message) => {
-  socket.emit("messageError", { error: message });
+// ==========================================
+// HELPERS
+// ==========================================
+const { askAi } = require("../services/aiBot");
+const BOT_ID = Number(process.env.AI_BOT_ID);
+const MENTION = /@talkora\s*ai/i;
+const SENDER_SELECT = { id: true, name: true, avatarUrl: true };
+const FILE_LABELS = { IMAGE: "📷 Photo", VIDEO: "🎥 Video", DOCUMENT: "📄 Document", POLL: "📊 Poll", AUDIO: "🎤 Voice message" };
+// How we load a poll together with its options and who voted
+const POLL_INCLUDE = {
+  options: {
+    orderBy: { sort: "asc" },
+    include: { votes: { select: { userId: true } } },
+  },
 };
 
-const isValidInteger = (value) => Number.isInteger(Number(value));
+// Turn a poll from the database into the shape the frontend uses
+const formatPoll = (poll) =>
+  poll
+    ? {
+        id: poll.id,
+        question: poll.question,
+        allowMultiple: poll.allowMultiple,
+        closed: poll.closed,
+        options: poll.options.map((o) => ({
+          id: o.id,
+          text: o.text,
+          voterIds: o.votes.map((v) => v.userId),
+        })),
+      }
+    : null;
+
+const emitError = (socket, message) => socket.emit("messageError", { error: message });
+const isInt = (value) => Number.isInteger(Number(value));
+const has = (value) => value !== undefined && value !== null;
+const cleanBody = (value) => (typeof value === "string" ? value.trim() : "");
+
+// Text shown in reply previews (file messages without a caption get a label)
+const previewText = (message) => message?.body || FILE_LABELS[message?.messageType] || null;
+
+// Send one event to many users
+const sendTo = (io, userIds, event, payload) =>
+  userIds.forEach((id) => io.to(`user:${id}`).emit(event, payload));
+
+const safe = (socket, name, handler) => async (data) => {
+  try {
+    await handler(data || {});
+  } catch (error) {
+    console.error(`Socket ${name} error:`, error);
+    emitError(socket, "Internal server error");
+  }
+};
 
 // ==========================================
-// NEW: UNREAD SUMMARY (messages missed while offline)
-// One entry per sender, respecting clearedAt and deletions
+// CONVERSATION HELPERS
 // ==========================================
 
-const getUnreadSummary = async (userId) => {
-  const memberships = await prisma.conversationMember.findMany({
-    where: { userId },
-    select: { conversationId: true, clearedAt: true },
+const findConversation = (userA, userB, include) =>
+  prisma.conversation.findFirst({
+    where: {
+      type: "DIRECT",
+      AND: [
+        { members: { some: { userId: userA } } },
+        { members: { some: { userId: userB } } },
+      ],
+    },
+    include,
   });
 
-  const summary = [];
+const findGroupConversation = (conversationId, userId, include) =>
+  prisma.conversation.findFirst({
+    where: { id: conversationId, type: "GROUP", members: { some: { userId } } },
+    include,
+  });
 
-  for (const membership of memberships) {
-    const where = {
-      conversationId: membership.conversationId,
-      receiverId: userId,
-      readAt: null,
-      deletedForEveryone: false,
-      NOT: { deletedFor: { has: userId } },
-      ...(membership.clearedAt
-        ? { createdAt: { gt: membership.clearedAt } }
-        : {}),
-    };
+const findOrCreateDirect = async (userA, userB) =>
+  (await findConversation(userA, userB)) ||
+  prisma.conversation.create({
+    data: {
+      type: "DIRECT",
+      members: { create: [{ userId: userA }, { userId: userB }] },
+    },
+  });
 
-    const count = await prisma.message.count({ where });
+const getGroupMemberIds = async (conversationId) =>
+  (
+    await prisma.conversationMember.findMany({
+      where: { conversationId },
+      select: { userId: true },
+    })
+  ).map((member) => member.userId);
 
-    if (!count) continue;
+const isGroup = async (conversationId) =>
+  Boolean(await prisma.conversation.findFirst({ where: { id: conversationId, type: "GROUP" } }));
 
-    const last = await prisma.message.findFirst({
-      where,
-      orderBy: { createdAt: "desc" },
-      select: {
-        body: true,
-        createdAt: true,
-        sender: {
-          select: { id: true, name: true, avatarUrl: true },
-        },
+// Who should be told about a change to this message
+const audience = async (message) =>
+  (await isGroup(message.conversationId))
+    ? getGroupMemberIds(message.conversationId)
+    : [message.senderId, message.receiverId].filter(Boolean);
+
+const touchConversation = async (conversationId, at) => {
+  await prisma.conversation.update({ where: { id: conversationId }, data: { lastMessageAt: at } });
+  await prisma.conversationMember.updateMany({
+    where: { conversationId, hidden: true },
+    data: { hidden: false },
+  });
+};
+
+// ==========================================
+// MESSAGE HELPERS
+// ==========================================
+
+const toPayload = (message, replyToText = null, senderName = null, senderAvatarUrl = null) => ({
+  id: message.id,
+  conversationId: message.conversationId,
+  senderId: message.senderId,
+  receiverId: message.receiverId,
+  body: message.body,
+  createdAt: message.createdAt,
+  editedAt: message.editedAt,
+  replyToId: message.replyToId,
+  replyToText,
+  senderName,
+  senderAvatarUrl,
+  deletedForEveryone: message.deletedForEveryone,
+
+  // File fields (photo / video / document)
+  messageType: message.messageType,
+  // NEW: view-once messages NEVER expose their real file link
+  fileUrl: message.viewOnce ? null : message.fileUrl,
+  fileName: message.viewOnce ? null : message.fileName,
+  fileSize: message.viewOnce ? null : message.fileSize,
+  mimeType: message.mimeType,
+  duration: message.duration,
+
+  // NEW: view-once info for the frontend
+  viewOnce: Boolean(message.viewOnce),
+  viewOnceState: message.viewOnce ? (message.mediaExpired ? "EXPIRED" : "UNOPENED") : null,
+
+  // Poll (null for normal messages)
+  poll: message.poll ? formatPoll(message.poll) : null,
+});
+
+// Messages deleted for everyone must not leak their text or file
+const hideIfDeleted = (message) =>
+  message.deletedForEveryone
+    ? { ...message, body: "", fileUrl: null, fileName: null, poll: null }
+    : message;
+
+const getReplyText = async (replyToId) =>
+  replyToId ? previewText(await prisma.message.findUnique({ where: { id: replyToId } })) : null;
+
+// Loads a message only if this user is allowed to touch it
+const getMyMessage = async (socket, messageId) => {
+  const me = Number(socket.userId);
+  const message = await prisma.message.findUnique({ where: { id: messageId } });
+
+  if (!message) {
+    emitError(socket, "Message not found");
+    return null;
+  }
+
+  if (await findGroupConversation(message.conversationId, me)) return message;
+
+  if (message.senderId !== me && message.receiverId !== me) {
+    emitError(socket, "Not allowed");
+    return null;
+  }
+
+  return message;
+};
+
+// All visible messages of a conversation for one user
+const fetchMessages = async (conversation, me) => {
+  const clearedAt = conversation.members.find((member) => member.userId === me)?.clearedAt;
+
+  const messages = await prisma.message.findMany({
+    where: {
+      conversationId: conversation.id,
+      ...(clearedAt ? { createdAt: { gt: clearedAt } } : {}),
+      NOT: { deletedFor: { has: me } },
+    },
+    orderBy: { createdAt: "asc" },
+    include: {
+      sender: { select: SENDER_SELECT },
+      poll: { include: POLL_INCLUDE },
+      views: { select: { userId: true } }, // NEW
+    },
+  });
+
+  return messages.map((message) =>
+    // NEW: sanitizeMessage hides the file link and sets viewOnceState for this user
+    sanitizeMessage(
+      {
+        ...hideIfDeleted(message),
+        poll: message.deletedForEveryone ? null : formatPoll(message.poll),
+        senderName: message.sender?.name || "User",
+        senderAvatarUrl: message.sender?.avatarUrl || null,
       },
-    });
+      me
+    )
+  );
+};
+// When someone writes to the Talkora AI chat, the bot answers
+const replyFromBot = async (io, conversationId, userId) => {
+  const room = `user:${userId}`;
+  io.to(room).emit("typing", { userId: BOT_ID, isTyping: true });
 
-    summary.push({
-      conversationId: membership.conversationId,
-      senderId: last.sender.id,
-      sender: last.sender,
-      count,
-      lastBody: last.body,
-      lastAt: last.createdAt,
-    });
+  const botMessage = await askAi(conversationId, userId);
+
+  io.to(room).emit("typing", { userId: BOT_ID, isTyping: false });
+  io.to(room).emit("newMessage", toPayload(botMessage));
+};
+// Someone wrote @Talkora AI inside a normal chat: the bot answers there
+// receiverId is null for groups
+const replyToMention = async (io, conversation, receiverId, memberIds) => {
+  const botMessage = await askAi(conversation.id, receiverId);
+
+  sendTo(io, memberIds, "newMessage", {
+    ...toPayload(botMessage, null, "Talkora AI"),
+    ...(receiverId === null
+      ? { conversationType: "GROUP", conversationName: conversation.name }
+      : {}),
+  });
+};
+// Create + save + deliver a direct text message (used by send and reply)
+const deliverDirect = async (io, socket, conversation, to, body, replyTarget = null) => {
+  const message = await prisma.message.create({
+    data: {
+      conversationId: conversation.id,
+      senderId: Number(socket.userId),
+      receiverId: to,
+      body,
+      replyToId: replyTarget?.id,
+    },
+  });
+
+  await touchConversation(conversation.id, message.createdAt);
+
+  const payload = toPayload(message, replyTarget ? previewText(replyTarget) : null);
+  socket.emit("messageSent", payload);
+  io.to(`user:${to}`).emit("newMessage", payload);
+     if (to === BOT_ID) {
+    replyFromBot(io, conversation.id, Number(socket.userId)).catch((e) =>
+      console.error("Talkora AI error:", e)
+    );
+    } else if (MENTION.test(body) || replyTarget?.senderId === BOT_ID) {
+    const askerId = Number(socket.userId);
+    replyToMention(io, conversation, askerId, [askerId, to]).catch((e) =>
+      console.error("Talkora AI error:", e)
+    );
   }
-
-  return summary;
 };
 
 // ==========================================
-// NEW: live notification to the receiver
-// If the receiver is offline nobody is in the room,
-// so this does nothing and the message is picked up
-// by getUnreadSummary when they come back online.
+// SOCKET EVENTS
 // ==========================================
-
-const emitMessageNotification = async (io, message) => {
-  try {
-    const sender = await prisma.user.findUnique({
-      where: { id: message.senderId },
-      select: { id: true, name: true, avatarUrl: true },
-    });
-
-    io.to(`user:${message.receiverId}`).emit("notification:message", {
-      conversationId: message.conversationId,
-      senderId: message.senderId,
-      sender,
-      body: message.body,
-      createdAt: message.createdAt,
-    });
-  } catch (error) {
-    console.error("Notification emit error:", error);
-  }
-};
 
 const registerMessageSocket = (io, socket) => {
-  // ==========================================
-  // NEW: SEND PENDING NOTIFICATIONS ON REQUEST
-  // The frontend emits "notifications:request" right after
-  // it has attached its listeners (on connect/reconnect).
-  // ==========================================
+  const me = Number(socket.userId);
 
-  socket.on("notifications:request", async () => {
-    try {
-      const userId = Number(socket.userId);
-
-      const [messages, others] = await Promise.all([
-        getUnreadSummary(userId),
-        prisma.notification.findMany({
-          where: { userId, readAt: null },
-          orderBy: { createdAt: "desc" },
-          take: 50,
-        }),
-      ]);
-
-      socket.emit("notifications:pending", { messages, others });
-    } catch (error) {
-      console.error("Socket pending notifications error:", error);
-
-      emitSocketError(socket, "Internal server error");
-    }
-  });
-
-  // ==========================================
-  // NEW: MARK GENERAL NOTIFICATIONS AS READ
-  // ==========================================
-
-  socket.on("notifications:markRead", async (ids) => {
-    try {
-      const userId = Number(socket.userId);
-
-      const idList = Array.isArray(ids)
-        ? ids.map(Number).filter(Number.isInteger)
-        : [];
-
-      if (!idList.length) return;
-
-      await prisma.notification.updateMany({
-        where: {
-          userId,
-          id: { in: idList },
-          readAt: null,
-        },
-        data: { readAt: new Date() },
-      });
-    } catch (error) {
-      console.error("Socket notifications markRead error:", error);
-
-      emitSocketError(socket, "Internal server error");
-    }
-  });
-
-  // ==========================================
-  // TYPING INDICATOR
-  // ==========================================
+  // ------------------------------------------
+  // TYPING
+  // ------------------------------------------
 
   socket.on("typing", (data) => {
     const receiverId = Number(data?.receiverId);
+    const isTyping = Boolean(data?.isTyping);
 
-    if (!Number.isInteger(receiverId)) return;
+    if (Number.isInteger(receiverId)) {
+      return io.to(`user:${receiverId}`).emit("typing", { userId: me, isTyping });
+    }
 
-    io.to(`user:${receiverId}`).emit("typing", {
-      userId: Number(socket.userId),
-      isTyping: Boolean(data?.isTyping),
-    });
+    const conversationId = Number(data?.conversationId);
+    if (!Number.isInteger(conversationId)) return;
+
+    findGroupConversation(conversationId, me)
+      .then(async (group) => {
+        if (!group) return;
+        const memberIds = await getGroupMemberIds(conversationId);
+        sendTo(
+          io,
+          memberIds.filter((id) => id !== me),
+          "typing",
+          { userId: me, conversationId, isTyping }
+        );
+      })
+      .catch((error) => console.error("Group typing error:", error));
   });
 
-  // ==========================================
+  // ------------------------------------------
   // SEND MESSAGE
-  // ==========================================
+  // DIRECT: { receiverId, body }   GROUP: { conversationId, body }
+  // ------------------------------------------
 
-  socket.on("sendMessage", async (data) => {
-    try {
-      const senderId = socket.userId;
+  socket.on(
+    "sendMessage",
+    safe(socket, "send message", async (data) => {
+      const body = cleanBody(data.body);
+      if (!body) return emitError(socket, "Message body is required");
 
-      const { receiverId, body } = data;
+      // GROUP
+      if (has(data.conversationId)) {
+        const groupId = Number(data.conversationId);
+        if (!isInt(groupId)) return emitError(socket, "conversationId must be a valid number");
 
-      // ------------------------------------------
-      // Validate receiverId
-      // ------------------------------------------
+        const conversation = await findGroupConversation(groupId, me);
+        if (!conversation) return emitError(socket, "Group not found or you are not a member");
 
-      if (!receiverId) {
-        emitSocketError(socket, "receiverId is required");
-        return;
-      }
-
-      const parsedReceiverId = Number(receiverId);
-
-      if (!isValidInteger(parsedReceiverId)) {
-        emitSocketError(socket, "receiverId must be a valid number");
-        return;
-      }
-
-      // ------------------------------------------
-      // Validate message body
-      // ------------------------------------------
-
-      if (!body || !body.trim()) {
-        emitSocketError(socket, "Message body is required");
-        return;
-      }
-
-      // ------------------------------------------
-      // Prevent sending message to yourself
-      // ------------------------------------------
-
-      if (senderId === parsedReceiverId) {
-        emitSocketError(socket, "You cannot send a message to yourself");
-        return;
-      }
-
-      // ------------------------------------------
-      // Check receiver exists
-      // ------------------------------------------
-
-      const receiver = await prisma.user.findUnique({
-        where: {
-          id: parsedReceiverId,
-        },
-      });
-
-      if (!receiver) {
-        emitSocketError(socket, "Receiver not found");
-        return;
-      }
-
-      // ------------------------------------------
-      // Find existing conversation
-      // ------------------------------------------
-
-      let conversation = await prisma.conversation.findFirst({
-        where: {
-          members: {
-            some: {
-              userId: senderId,
-            },
-          },
-          AND: {
-            members: {
-              some: {
-                userId: parsedReceiverId,
-              },
-            },
-          },
-        },
-        include: {
-          members: true,
-        },
-      });
-
-      // ------------------------------------------
-      // Create conversation if it doesn't exist
-      // ------------------------------------------
-
-      if (!conversation) {
-        conversation = await prisma.conversation.create({
-          data: {
-            members: {
-              create: [
-                {
-                  userId: senderId,
-                },
-                {
-                  userId: parsedReceiverId,
-                },
-              ],
-            },
-          },
-          include: {
-            members: true,
-          },
-        });
-      }
-
-      // ------------------------------------------
-      // Create message
-      // ------------------------------------------
-
-      const message = await prisma.message.create({
-        data: {
-          conversationId: conversation.id,
-          senderId,
-          receiverId: parsedReceiverId,
-          body: body.trim(),
-        },
-      });
-
-      // ------------------------------------------
-      // Update last message time
-      // ------------------------------------------
-
-      await prisma.conversation.update({
-        where: {
-          id: conversation.id,
-        },
-        data: {
-          lastMessageAt: message.createdAt,
-        },
-      });
-
-      // ------------------------------------------
-      // A new message brings the chat back
-      // for anyone who had deleted it
-      // ------------------------------------------
-
-      await prisma.conversationMember.updateMany({
-        where: {
-          conversationId: conversation.id,
-          hidden: true,
-        },
-        data: {
-          hidden: false,
-        },
-      });
-
-      // ------------------------------------------
-      // Message data
-      // ------------------------------------------
-
-      const messageData = {
-        id: message.id,
-        conversationId: message.conversationId,
-        senderId: message.senderId,
-        receiverId: message.receiverId,
-        body: message.body,
-        createdAt: message.createdAt,
-        editedAt: message.editedAt,
-        replyToId: message.replyToId,
-        replyToText: null,
-      };
-
-      // ------------------------------------------
-      // Send message back to sender
-      // ------------------------------------------
-
-      socket.emit("messageSent", messageData);
-
-      // ------------------------------------------
-      // Send message to receiver
-      // ------------------------------------------
-
-      io.to(`user:${parsedReceiverId}`).emit(
-        "newMessage",
-        messageData
-      );
-
-      // ------------------------------------------
-      // NEW: notification for the receiver
-      // ------------------------------------------
-
-      await emitMessageNotification(io, message);
-    } catch (error) {
-      console.error("Socket send message error:", error);
-
-      emitSocketError(socket, "Internal server error");
-    }
-  });
-
-  // ==========================================
-  // GET MESSAGES
-  // ==========================================
-
-  socket.on("getMessages", async (data) => {
-    try {
-      const currentUserId = socket.userId;
-
-      const { userId } = data;
-
-      const otherUserId = Number(userId);
-
-      // ------------------------------------------
-      // Validate userId
-      // ------------------------------------------
-
-      if (!isValidInteger(otherUserId)) {
-        emitSocketError(socket, "Invalid user ID");
-        return;
-      }
-
-      // ------------------------------------------
-      // Prevent requesting your own conversation
-      // ------------------------------------------
-
-      if (currentUserId === otherUserId) {
-        emitSocketError(socket, "You cannot open a conversation with yourself");
-        return;
-      }
-
-      // ------------------------------------------
-      // Check that other user exists
-      // ------------------------------------------
-
-      const otherUser = await prisma.user.findUnique({
-        where: {
-          id: otherUserId,
-        },
-      });
-
-      if (!otherUser) {
-        emitSocketError(socket, "User not found");
-        return;
-      }
-
-      // ------------------------------------------
-      // Find conversation between both users
-      // ------------------------------------------
-
-      const conversation = await prisma.conversation.findFirst({
-        where: {
-          members: {
-            some: {
-              userId: currentUserId,
-            },
-          },
-          AND: {
-            members: {
-              some: {
-                userId: otherUserId,
-              },
-            },
-          },
-        },
-        include: {
-          members: true,
-        },
-      });
-
-      // ------------------------------------------
-      // No conversation yet
-      // ------------------------------------------
-
-      if (!conversation) {
-        socket.emit("messages", {
-          conversationId: null,
-          messages: [],
+        // receiverId is NULL for group messages
+        const message = await prisma.message.create({
+          data: { conversationId: conversation.id, senderId: me, receiverId: null, body },
+          include: { sender: { select: SENDER_SELECT } },
         });
 
-        return;
-      }
+        await touchConversation(conversation.id, message.createdAt);
 
-      // ------------------------------------------
-      // When did I last clear/delete this chat?
-      // ------------------------------------------
-
-      const myMembership = conversation.members.find(
-        (member) => member.userId === currentUserId
-      );
-
-      const clearedAt = myMembership?.clearedAt;
-
-      // ------------------------------------------
-      // Get messages
-      // ------------------------------------------
-
-      const messages = await prisma.message.findMany({
-        where: {
-          conversationId: conversation.id,
-
-          // only messages after I cleared the chat
-          ...(clearedAt
-            ? { createdAt: { gt: clearedAt } }
-            : {}),
-
-          // hide messages this user deleted "for me"
-          NOT: {
-            deletedFor: {
-              has: currentUserId,
-            },
-          },
-        },
-        orderBy: {
-          createdAt: "asc",
-        },
-      });
-
-      // ------------------------------------------
-      // Mask the text of messages deleted for
-      // everyone. The database is NOT changed,
-      // only the copy sent to the browser.
-      // ------------------------------------------
-
-      const safeMessages = messages.map((message) =>
-        message.deletedForEveryone
-          ? { ...message, body: "" }
-          : message
-      );
-
-      // ------------------------------------------
-      // Send messages back through Socket.IO
-      // ------------------------------------------
-
-      socket.emit("messages", {
-        conversationId: conversation.id,
-        messages: safeMessages,
-      });
-    } catch (error) {
-      console.error("Socket get messages error:", error);
-
-      emitSocketError(socket, "Internal server error");
-    }
-  });
-
-  // ==========================================
-  // MARK MESSAGES AS READ
-  // ==========================================
-
-  socket.on("markRead", async (data) => {
-    try {
-      const currentUserId = Number(socket.userId);
-      const senderId = Number(data?.senderId);
-
-      if (!isValidInteger(senderId)) {
-        emitSocketError(socket, "Invalid sender ID");
-        return;
-      }
-
-      if (currentUserId === senderId) {
-        return;
-      }
-
-      const conversation = await prisma.conversation.findFirst({
-        where: {
-          members: {
-            some: {
-              userId: currentUserId,
-            },
-          },
-          AND: {
-            members: {
-              some: {
-                userId: senderId,
-              },
-            },
-          },
-        },
-      });
-
-      if (!conversation) {
-        return;
-      }
-
-      const readAt = new Date();
-
-      const updated = await prisma.message.updateMany({
-        where: {
-          conversationId: conversation.id,
-          senderId,
-          receiverId: currentUserId,
-          readAt: null,
-          deletedForEveryone: false,
-        },
-        data: {
-          readAt,
-        },
-      });
-
-      if (updated.count > 0) {
         const payload = {
-          readerId: currentUserId,
-          readAt: readAt.toISOString(),
+          ...toPayload(
+            message,
+            null,
+            message.sender?.name || "User",
+            message.sender?.avatarUrl || null
+          ),
+          conversationType: "GROUP",
+          conversationName: conversation.name,
         };
 
-        io.to(`user:${senderId}`).emit(
-          "messagesRead",
-          payload
-        );
-      }
-    } catch (error) {
-      console.error("Socket mark read error:", error);
+        socket.emit("messageSent", payload);
 
-      emitSocketError(socket, "Internal server error");
-    }
-  });
+        const memberIds = await getGroupMemberIds(conversation.id);
+                sendTo(io, memberIds.filter((id) => id !== me), "newMessage", payload);
 
-  // ==========================================
-  // REPLY TO MESSAGE
-  // ==========================================
-
-  socket.on("replyMessage", async (data) => {
-    try {
-      const senderId = socket.userId;
-      const receiverId = Number(data?.receiverId);
-      const replyToId = Number(data?.replyToId);
-      const body =
-        typeof data?.body === "string"
-          ? data.body.trim()
-          : "";
-
-      if (!isValidInteger(receiverId)) {
-        emitSocketError(socket, "Invalid receiver ID");
+        if (MENTION.test(body)) {
+          replyToMention(io, conversation, null, memberIds).catch((e) =>
+            console.error("Talkora AI error:", e)
+          );
+        }
         return;
       }
 
-      if (!body) {
-        emitSocketError(socket, "Message body is required");
-        return;
+      // DIRECT
+      const to = Number(data.receiverId);
+      if (!data.receiverId) return emitError(socket, "receiverId is required");
+      if (!isInt(to)) return emitError(socket, "receiverId must be a valid number");
+      if (me === to) return emitError(socket, "You cannot send a message to yourself");
+
+      const receiver = await prisma.user.findUnique({ where: { id: to } });
+      if (!receiver) return emitError(socket, "Receiver not found");
+
+      const conversation = await findOrCreateDirect(me, to);
+      await deliverDirect(io, socket, conversation, to, body);
+    })
+  );
+
+  // ------------------------------------------
+  // CREATE POLL
+  // DIRECT: { receiverId, question, options, allowMultiple }
+  // GROUP:  { conversationId, question, options, allowMultiple }
+  // ------------------------------------------
+
+  socket.on(
+    "createPoll",
+    safe(socket, "create poll", async (data) => {
+      const question = cleanBody(data.question);
+      const options = Array.isArray(data.options)
+        ? [...new Set(data.options.map(cleanBody).filter(Boolean))]
+        : [];
+
+      if (!question) return emitError(socket, "Poll question is required");
+      if (question.length > 200) return emitError(socket, "Question is too long (max 200)");
+      if (options.length < 2) return emitError(socket, "Add at least 2 different options");
+      if (options.length > 6) return emitError(socket, "You can add up to 6 options");
+      if (options.some((o) => o.length > 100)) {
+        return emitError(socket, "An option is too long (max 100)");
       }
 
-      if (senderId === receiverId) {
-        emitSocketError(socket, "You cannot reply to yourself");
-        return;
-      }
+      const isGroupPoll = has(data.conversationId);
+      let conversation;
+      let to = null;
 
-      if (!isValidInteger(replyToId)) {
-        emitSocketError(socket, "Invalid reply target");
-        return;
-      }
+      if (isGroupPoll) {
+        const groupId = Number(data.conversationId);
+        if (!isInt(groupId)) return emitError(socket, "conversationId must be a valid number");
 
-      const replyTarget = await prisma.message.findUnique({
-        where: {
-          id: replyToId,
-        },
-      });
+        conversation = await findGroupConversation(groupId, me);
+        if (!conversation) return emitError(socket, "Group not found or you are not a member");
+      } else {
+        to = Number(data.receiverId);
+        if (!isInt(to)) return emitError(socket, "receiverId must be a valid number");
+        if (me === to) return emitError(socket, "You cannot send a poll to yourself");
 
-      if (!replyTarget) {
-        emitSocketError(socket, "Message not found");
-        return;
-      }
+        const receiver = await prisma.user.findUnique({ where: { id: to } });
+        if (!receiver) return emitError(socket, "Receiver not found");
 
-      const conversation = await prisma.conversation.findFirst({
-        where: {
-          members: {
-            some: {
-              userId: senderId,
-            },
-          },
-          AND: {
-            members: {
-              some: {
-                userId: receiverId,
-              },
-            },
-          },
-        },
-      });
-
-      if (!conversation) {
-        emitSocketError(socket, "Conversation not found");
-        return;
+        conversation = await findOrCreateDirect(me, to);
       }
 
       const message = await prisma.message.create({
         data: {
           conversationId: conversation.id,
-          senderId,
-          receiverId,
-          body,
-          replyToId: replyTarget.id,
+          senderId: me,
+          receiverId: to,
+          body: question,
+          messageType: "POLL",
+          poll: {
+            create: {
+              question,
+              allowMultiple: Boolean(data.allowMultiple),
+              options: { create: options.map((text, index) => ({ text, sort: index })) },
+            },
+          },
+        },
+        include: {
+          sender: { select: SENDER_SELECT },
+          poll: { include: POLL_INCLUDE },
         },
       });
 
-      await prisma.conversation.update({
-        where: {
-          id: conversation.id,
-        },
-        data: {
-          lastMessageAt: message.createdAt,
-        },
-      });
-
-      await prisma.conversationMember.updateMany({
-        where: {
-          conversationId: conversation.id,
-          hidden: true,
-        },
-        data: {
-          hidden: false,
-        },
-      });
+      await touchConversation(conversation.id, message.createdAt);
 
       const payload = {
-        id: message.id,
-        conversationId: message.conversationId,
-        senderId: message.senderId,
-        receiverId: message.receiverId,
-        body: message.body,
-        createdAt: message.createdAt,
-        editedAt: null,
-        replyToId: message.replyToId,
-        replyToText: replyTarget.body,
+        ...toPayload(
+          message,
+          null,
+          message.sender?.name || "User",
+          message.sender?.avatarUrl || null
+        ),
+        ...(isGroupPoll
+          ? { conversationType: "GROUP", conversationName: conversation.name }
+          : {}),
       };
 
       socket.emit("messageSent", payload);
 
-      io.to(`user:${receiverId}`).emit(
-        "newMessage",
-        payload
-      );
-
-      // NEW: notification for the receiver
-      await emitMessageNotification(io, message);
-    } catch (error) {
-      console.error("Socket reply message error:", error);
-
-      emitSocketError(socket, "Internal server error");
-    }
-  });
-
-  // ==========================================
-  // EDIT MESSAGE
-  // ==========================================
-
-  socket.on("editMessage", async (data) => {
-    try {
-      const currentUserId = Number(socket.userId);
-      const messageId = Number(data?.messageId);
-      const body =
-        typeof data?.body === "string"
-          ? data.body.trim()
-          : "";
-
-      if (!isValidInteger(messageId)) {
-        emitSocketError(socket, "Invalid message ID");
-        return;
+      if (isGroupPoll) {
+        const memberIds = await getGroupMemberIds(conversation.id);
+        sendTo(io, memberIds.filter((id) => id !== me), "newMessage", payload);
+      } else {
+        io.to(`user:${to}`).emit("newMessage", payload);
       }
+    })
+  );
+  // ------------------------------------------
+  // VOTE ON POLL
+  // { pollId, optionId }
+  // Tap an option to vote, tap it again to remove your vote.
+  // ------------------------------------------
 
-      if (!body) {
-        emitSocketError(socket, "Message body is required");
-        return;
-      }
+  socket.on(
+    "votePoll",
+    safe(socket, "vote poll", async (data) => {
+      const pollId = Number(data.pollId);
+      const optionId = Number(data.optionId);
 
-      const message = await prisma.message.findUnique({
-        where: {
-          id: messageId,
-        },
+      if (!isInt(pollId) || !isInt(optionId)) return emitError(socket, "Invalid poll or option");
+
+      const poll = await prisma.poll.findUnique({
+        where: { id: pollId },
+        include: { options: true },
       });
 
-      if (!message) {
-        emitSocketError(socket, "Message not found");
+      if (!poll) return emitError(socket, "Poll not found");
+      if (poll.closed) return emitError(socket, "This poll is closed");
+      if (!poll.options.some((o) => o.id === optionId)) {
+        return emitError(socket, "Option not found");
+      }
+
+      // makes sure I am allowed to see this chat
+      const message = await getMyMessage(socket, poll.messageId);
+      if (!message) return;
+      if (message.deletedForEveryone) return emitError(socket, "This poll was deleted");
+
+      const existing = await prisma.pollVote.findUnique({
+        where: { optionId_userId: { optionId, userId: me } },
+      });
+
+      if (existing) {
+        // tapped the same option again: remove my vote
+        await prisma.pollVote.delete({ where: { id: existing.id } });
+      } else if (poll.allowMultiple) {
+        await prisma.pollVote.create({ data: { pollId, optionId, userId: me } });
+      } else {
+        // single choice: replace my old vote with the new one
+        await prisma.$transaction([
+          prisma.pollVote.deleteMany({ where: { pollId, userId: me } }),
+          prisma.pollVote.create({ data: { pollId, optionId, userId: me } }),
+        ]);
+      }
+
+      const updated = await prisma.poll.findUnique({
+        where: { id: pollId },
+        include: POLL_INCLUDE,
+      });
+
+      sendTo(io, await audience(message), "pollUpdated", {
+        messageId: message.id,
+        poll: formatPoll(updated),
+      });
+    })
+  );
+  // ------------------------------------------
+  // GET MESSAGES
+  // DIRECT: { userId }   GROUP: { conversationId }
+  // ------------------------------------------
+
+  socket.on(
+    "getMessages",
+    safe(socket, "get messages", async (data) => {
+      let conversation;
+
+      if (has(data.conversationId)) {
+        const conversationId = Number(data.conversationId);
+        if (!isInt(conversationId)) return emitError(socket, "Invalid conversation ID");
+
+        conversation = await findGroupConversation(conversationId, me, { members: true });
+        if (!conversation) return emitError(socket, "Group not found or you are not a member");
+      } else {
+        const otherId = Number(data.userId);
+        if (!isInt(otherId)) return emitError(socket, "Invalid user ID");
+        if (me === otherId) {
+          return emitError(socket, "You cannot open a conversation with yourself");
+        }
+
+        const otherUser = await prisma.user.findUnique({ where: { id: otherId } });
+        if (!otherUser) return emitError(socket, "User not found");
+
+        conversation = await findConversation(me, otherId, { members: true });
+      }
+
+      socket.emit("messages", {
+        conversationId: conversation?.id ?? null,
+        messages: conversation ? await fetchMessages(conversation, me) : [],
+      });
+    })
+  );
+
+  // ------------------------------------------
+  // MARK AS READ
+  // ------------------------------------------
+
+  socket.on(
+    "markRead",
+    safe(socket, "mark read", async (data) => {
+      // GROUP
+      if (has(data.conversationId)) {
+        const conversationId = Number(data.conversationId);
+        if (!isInt(conversationId)) return emitError(socket, "Invalid conversation ID");
+
+        if (!(await findGroupConversation(conversationId, me))) {
+          return emitError(socket, "Group not found or you are not a member");
+        }
+
+        await prisma.conversationMember.update({
+          where: { conversationId_userId: { conversationId, userId: me } },
+          data: { lastReadAt: new Date() },
+        });
         return;
       }
 
-      if (message.senderId !== currentUserId) {
-        emitSocketError(socket, "Not allowed");
-        return;
+      // DIRECT
+      const senderId = Number(data.senderId);
+      if (!isInt(senderId)) return emitError(socket, "Invalid sender ID");
+      if (me === senderId) return;
+
+      const conversation = await findConversation(me, senderId);
+      if (!conversation) return;
+
+      const readAt = new Date();
+      const { count } = await prisma.message.updateMany({
+        where: {
+          conversationId: conversation.id,
+          senderId,
+          receiverId: me,
+          readAt: null,
+          deletedForEveryone: false,
+        },
+        data: { readAt },
+      });
+
+      if (count > 0) {
+        io.to(`user:${senderId}`).emit("messagesRead", {
+          readerId: me,
+          readAt: readAt.toISOString(),
+        });
       }
+    })
+  );
+
+  // ------------------------------------------
+  // REPLY MESSAGE
+  // ------------------------------------------
+
+  socket.on(
+    "replyMessage",
+    safe(socket, "reply message", async (data) => {
+      const receiverId = Number(data.receiverId);
+      const replyToId = Number(data.replyToId);
+      const body = cleanBody(data.body);
+
+      if (!isInt(receiverId)) return emitError(socket, "Invalid receiver ID");
+      if (!body) return emitError(socket, "Message body is required");
+      if (me === receiverId) return emitError(socket, "You cannot reply to yourself");
+      if (!isInt(replyToId)) return emitError(socket, "Invalid reply target");
+
+      const replyTarget = await prisma.message.findUnique({ where: { id: replyToId } });
+      if (!replyTarget) return emitError(socket, "Message not found");
+
+      const conversation = await findConversation(me, receiverId);
+      if (!conversation) return emitError(socket, "Conversation not found");
+
+      await deliverDirect(io, socket, conversation, receiverId, body, replyTarget);
+    })
+  );
+
+  // ------------------------------------------
+  // EDIT MESSAGE
+  // ------------------------------------------
+
+  socket.on(
+    "editMessage",
+    safe(socket, "edit message", async (data) => {
+      const messageId = Number(data.messageId);
+      const body = cleanBody(data.body);
+
+      if (!isInt(messageId)) return emitError(socket, "Invalid message ID");
+      if (!body) return emitError(socket, "Message body is required");
+
+      const message = await prisma.message.findUnique({ where: { id: messageId } });
+      if (!message) return emitError(socket, "Message not found");
+      if (message.senderId !== me) return emitError(socket, "Not allowed");
 
       const updated = await prisma.message.update({
-        where: {
-          id: messageId,
-        },
-        data: {
-          body,
-          editedAt: new Date(),
-        },
+        where: { id: messageId },
+        data: { body, editedAt: new Date() },
       });
 
-      const payload = {
+      sendTo(io, await audience(updated), "messageEdited", {
         id: updated.id,
         messageId: updated.id,
+        conversationId: updated.conversationId,
         body: updated.body,
         editedAt: updated.editedAt,
         senderId: updated.senderId,
         receiverId: updated.receiverId,
+      });
+    })
+  );
+
+  // ------------------------------------------
+  // DELETE MESSAGE
+  // ------------------------------------------
+
+  socket.on(
+    "deleteMessage",
+    safe(socket, "delete message", async (data) => {
+      const id = Number(data.messageId);
+      const mode = data.mode;
+
+      if (!isInt(id)) return emitError(socket, "Invalid message ID");
+      if (mode !== "everyone" && mode !== "me") return emitError(socket, "Invalid delete mode");
+
+      const message = await getMyMessage(socket, id);
+      if (!message) return;
+
+      // DELETE FOR EVERYONE
+      if (mode === "everyone") {
+        if (message.senderId !== me) {
+          return emitError(socket, "You can only delete your own messages for everyone");
+        }
+
+        await prisma.message.update({
+          where: { id },
+          data: { deletedForEveryone: true, deletedAt: new Date() },
+        });
+
+        return sendTo(io, await audience(message), "messageDeleted", { messageId: id, mode });
+      }
+
+      // DELETE FOR ME
+      if (!message.deletedFor.includes(me)) {
+        await prisma.message.update({ where: { id }, data: { deletedFor: { push: me } } });
+      }
+
+      socket.emit("messageDeleted", { messageId: id, mode });
+    })
+  );
+
+  // ------------------------------------------
+  // UNDO DELETE
+  // ------------------------------------------
+
+  socket.on(
+    "undoDeleteMessage",
+    safe(socket, "undo delete message", async (data) => {
+      const messageId = Number(data.messageId);
+      const mode = data.mode;
+
+      if (!isInt(messageId)) return emitError(socket, "Invalid message ID");
+      if (mode !== "everyone" && mode !== "me") return emitError(socket, "Invalid undo mode");
+
+      const message = await getMyMessage(socket, messageId);
+      if (!message) return;
+
+      let restored;
+
+      if (mode === "everyone") {
+        if (message.senderId !== me) {
+          return emitError(socket, "Only the sender can undo delete for everyone");
+        }
+        if (!message.deletedForEveryone) {
+          return emitError(socket, "Message is not deleted for everyone");
+        }
+
+        restored = await prisma.message.update({
+          where: { id: messageId },
+          data: { deletedForEveryone: false, deletedAt: null },
+        });
+      } else {
+        if (!message.deletedFor.includes(me)) {
+          return emitError(socket, "Message is not deleted for you");
+        }
+
+        restored = await prisma.message.update({
+          where: { id: messageId },
+          data: { deletedFor: message.deletedFor.filter((uid) => Number(uid) !== me) },
+        });
+      }
+
+      const sender = await prisma.user.findUnique({
+        where: { id: restored.senderId },
+        select: SENDER_SELECT,
+      });
+
+      const payload = {
+        ...toPayload(
+          restored,
+          await getReplyText(restored.replyToId),
+          sender?.name || "User",
+          sender?.avatarUrl || null
+        ),
+        messageId: restored.id,
+        mode,
       };
 
-      socket.emit("messageEdited", payload);
-
-      io.to(`user:${updated.receiverId}`).emit(
-        "messageEdited",
-        payload
-      );
-    } catch (error) {
-      console.error("Socket edit message error:", error);
-
-      emitSocketError(socket, "Internal server error");
-    }
-  });
-
-  // ==========================================
-  // DELETE MESSAGE
-  // ==========================================
-
-  socket.on("deleteMessage", async (data) => {
-    try {
-      const currentUserId = Number(socket.userId);
-
-      const { messageId, mode } = data;
-
-      const id = Number(messageId);
-
-      if (!isValidInteger(id)) {
-        emitSocketError(socket, "Invalid message ID");
-        return;
-      }
-
-      if (mode !== "everyone" && mode !== "me") {
-        emitSocketError(socket, "Invalid delete mode");
-        return;
-      }
-
-      const message = await prisma.message.findUnique({
-        where: {
-          id,
-        },
-      });
-
-      if (!message) {
-        socket.emit("messageError", {
-          error: "Message not found",
-        });
-
-        return;
-      }
-
-      const isParticipant =
-        message.senderId === currentUserId ||
-        message.receiverId === currentUserId;
-
-      if (!isParticipant) {
-        socket.emit("messageError", {
-          error: "Not allowed",
-        });
-
-        return;
-      }
-
-      // ------------------------------------------
-      // DELETE FOR EVERYONE
-      // Only your own messages
-      // ------------------------------------------
-
       if (mode === "everyone") {
-        if (message.senderId !== currentUserId) {
-          socket.emit("messageError", {
-            error:
-              "You can only delete your own messages for everyone",
-          });
-
-          return;
-        }
-
-        await prisma.message.update({
-          where: {
-            id,
-          },
-          data: {
-            deletedForEveryone: true,
-            deletedAt: new Date(),
-          },
-        });
-
-        const payload = {
-          messageId: id,
-          mode: "everyone",
-        };
-
-        // Send delete event to sender
-        socket.emit("messageDeleted", payload);
-
-        // Send delete event to receiver
-        io.to(`user:${message.receiverId}`).emit(
-          "messageDeleted",
-          payload
-        );
-
-        return;
+        sendTo(io, await audience(restored), "messageRestored", payload);
+      } else {
+        socket.emit("messageRestored", payload);
       }
+    })
+  );
 
-      // ------------------------------------------
-      // DELETE FOR ME
-      // ------------------------------------------
+  // ------------------------------------------
+  // DELETE / CLEAR DIRECT CHAT
+  // ------------------------------------------
 
-      if (!message.deletedFor.includes(currentUserId)) {
-        await prisma.message.update({
-          where: {
-            id,
-          },
-          data: {
-            deletedFor: {
-              push: currentUserId,
-            },
-          },
-        });
-      }
+  socket.on(
+    "deleteChat",
+    safe(socket, "delete chat", async (data) => {
+      const otherId = Number(data.userId);
+      const mode = data.mode;
 
-      socket.emit("messageDeleted", {
-        messageId: id,
-        mode: "me",
-      });
-    } catch (error) {
-      console.error(
-        "Socket delete message error:",
-        error
-      );
+      if (!isInt(otherId)) return emitError(socket, "Invalid user ID");
+      if (mode !== "delete" && mode !== "clear") return emitError(socket, "Invalid mode");
 
-      socket.emit("messageError", {
-        error: "Internal server error",
-      });
-    }
-  });
-
-  // ==========================================
-  // UNDO DELETE MESSAGE
-  // ==========================================
-
-  socket.on("undoDeleteMessage", async (data) => {
-    try {
-      const currentUserId = Number(socket.userId);
-
-      const messageId = Number(data?.messageId);
-      const mode = data?.mode;
-
-      // ------------------------------------------
-      // Validate message ID
-      // ------------------------------------------
-
-      if (!isValidInteger(messageId)) {
-        emitSocketError(socket, "Invalid message ID");
-        return;
-      }
-
-      // ------------------------------------------
-      // Validate undo mode
-      // ------------------------------------------
-
-      if (mode !== "everyone" && mode !== "me") {
-        emitSocketError(socket, "Invalid undo mode");
-        return;
-      }
-
-      // ------------------------------------------
-      // Find message
-      // ------------------------------------------
-
-      const message = await prisma.message.findUnique({
-        where: {
-          id: messageId,
-        },
-      });
-
-      if (!message) {
-        emitSocketError(socket, "Message not found");
-        return;
-      }
-
-      // ------------------------------------------
-      // Check user is a participant
-      // ------------------------------------------
-
-      const isParticipant =
-        message.senderId === currentUserId ||
-        message.receiverId === currentUserId;
-
-      if (!isParticipant) {
-        emitSocketError(socket, "Not allowed");
-        return;
-      }
-
-      // ------------------------------------------
-      // UNDO DELETE FOR EVERYONE
-      // ------------------------------------------
-
-      if (mode === "everyone") {
-        // Only the original sender can undo
-        // Delete for Everyone.
-        if (message.senderId !== currentUserId) {
-          emitSocketError(socket, "Only the sender can undo delete for everyone");
-          return;
-        }
-
-        // Message must actually be deleted.
-        if (!message.deletedForEveryone) {
-          emitSocketError(socket, "Message is not deleted for everyone");
-          return;
-        }
-
-        const restored = await prisma.message.update({
-          where: {
-            id: messageId,
-          },
-          data: {
-            deletedForEveryone: false,
-            deletedAt: null,
-          },
-        });
-
-        // ------------------------------------------
-        // Get reply information
-        // ------------------------------------------
-
-        let replyToText = null;
-
-        if (restored.replyToId) {
-          const replyTarget =
-            await prisma.message.findUnique({
-              where: {
-                id: restored.replyToId,
-              },
-              select: {
-                body: true,
-              },
-            });
-
-          replyToText = replyTarget?.body ?? null;
-        }
-
-        // ------------------------------------------
-        // Restored message payload
-        // ------------------------------------------
-
-        const payload = {
-          id: restored.id,
-          messageId: restored.id,
-          conversationId: restored.conversationId,
-          senderId: restored.senderId,
-          receiverId: restored.receiverId,
-          body: restored.body,
-          createdAt: restored.createdAt,
-          editedAt: restored.editedAt,
-          replyToId: restored.replyToId,
-          replyToText,
-          mode: "everyone",
-        };
-
-        // ------------------------------------------
-        // Restore for sender
-        // ------------------------------------------
-
-        socket.emit(
-          "messageRestored",
-          payload
-        );
-
-        // ------------------------------------------
-        // Restore for receiver
-        // ------------------------------------------
-
-        io.to(`user:${restored.receiverId}`).emit(
-          "messageRestored",
-          payload
-        );
-
-        return;
-      }
-
-      // ------------------------------------------
-      // UNDO DELETE FOR ME
-      // ------------------------------------------
-
-      if (mode === "me") {
-        // Message must be deleted for this user.
-        if (!message.deletedFor.includes(currentUserId)) {
-          emitSocketError(socket, "Message is not deleted for you");
-          return;
-        }
-
-        // ------------------------------------------
-        // Remove only current user's ID
-        // ------------------------------------------
-
-        const updatedDeletedFor =
-          message.deletedFor.filter(
-            (userId) =>
-              Number(userId) !== currentUserId
-          );
-
-        const restored =
-          await prisma.message.update({
-            where: {
-              id: messageId,
-            },
-            data: {
-              deletedFor: updatedDeletedFor,
-            },
-          });
-
-        // ------------------------------------------
-        // Get reply information
-        // ------------------------------------------
-
-        let replyToText = null;
-
-        if (restored.replyToId) {
-          const replyTarget =
-            await prisma.message.findUnique({
-              where: {
-                id: restored.replyToId,
-              },
-              select: {
-                body: true,
-              },
-            });
-
-          replyToText = replyTarget?.body ?? null;
-        }
-
-        // ------------------------------------------
-        // Restored message payload
-        // ------------------------------------------
-
-        const payload = {
-          id: restored.id,
-          messageId: restored.id,
-          conversationId: restored.conversationId,
-          senderId: restored.senderId,
-          receiverId: restored.receiverId,
-          body: restored.body,
-          createdAt: restored.createdAt,
-          editedAt: restored.editedAt,
-          replyToId: restored.replyToId,
-          replyToText,
-          mode: "me",
-        };
-
-        // ------------------------------------------
-        // Only the user who deleted the message
-        // needs to receive the restoration.
-        // ------------------------------------------
-
-        socket.emit(
-          "messageRestored",
-          payload
-        );
-      }
-    } catch (error) {
-      console.error(
-        "Socket undo delete message error:",
-        error
-      );
-
-      emitSocketError(socket, "Internal server error");
-    }
-  });
-
-  // ==========================================
-  // DELETE OR CLEAR CHAT (for me only)
-  // ==========================================
-
-  socket.on("deleteChat", async (data) => {
-    try {
-      const currentUserId = Number(socket.userId);
-
-      const { userId, mode } = data;
-
-      const otherUserId = Number(userId);
-
-      if (!isValidInteger(otherUserId)) {
-        emitSocketError(socket, "Invalid user ID");
-        return;
-      }
-
-      if (mode !== "delete" && mode !== "clear") {
-        emitSocketError(socket, "Invalid mode");
-        return;
-      }
-
-      // ------------------------------------------
-      // Find the conversation between both users
-      // ------------------------------------------
-
-      const conversation = await prisma.conversation.findFirst({
-        where: {
-          members: {
-            some: {
-              userId: currentUserId,
-            },
-          },
-          AND: {
-            members: {
-              some: {
-                userId: otherUserId,
-              },
-            },
-          },
-        },
-      });
-
-      if (!conversation) {
-        emitSocketError(socket, "Chat not found");
-        return;
-      }
-
-      // ------------------------------------------
-      // Update ONLY my own membership row.
-      // No messages are deleted from the database.
-      // ------------------------------------------
+      const conversation = await findConversation(me, otherId);
+      if (!conversation) return emitError(socket, "Chat not found");
 
       await prisma.conversationMember.updateMany({
-        where: {
-          conversationId: conversation.id,
-          userId: currentUserId,
-        },
-        data:
-          mode === "delete"
-            ? {
-                clearedAt: new Date(),
-                hidden: true,
-              }
-            : {
-                clearedAt: new Date(),
-              },
+        where: { conversationId: conversation.id, userId: me },
+        data: mode === "delete" ? { clearedAt: new Date(), hidden: true } : { clearedAt: new Date() },
       });
 
-      socket.emit("chatDeleted", {
-        userId: otherUserId,
-        mode,
-      });
-    } catch (error) {
-      console.error(
-        "Socket delete chat error:",
-        error
-      );
-
-      emitSocketError(socket, "Internal server error");
-    }
-  });
+      socket.emit("chatDeleted", { userId: otherId, mode });
+    })
+  );
 };
 
+// ==========================================
+// EXPORT
+// ==========================================
+
 module.exports = registerMessageSocket;
+
+// Shared with the REST file-upload controller
+module.exports.toPayload = toPayload;
+module.exports.touchConversation = touchConversation;

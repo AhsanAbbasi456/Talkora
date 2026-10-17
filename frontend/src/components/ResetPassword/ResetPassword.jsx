@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Lock, Check, X, Eye, EyeOff } from "lucide-react";
 
+const API_BASE_URL = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api`;
+
 // Password rules used for the checklist UI
 const PASSWORD_RULES = [
   { label: "At least 8 characters", test: (pw) => pw.length >= 8 },
@@ -100,7 +102,7 @@ export default function ResetPassword() {
 
     try {
       const response = await fetch(
-        "http://localhost:3000/api/auth/reset-password",
+        `${API_BASE_URL}/auth/reset-password`,
         {
           method: "POST",
           headers: {

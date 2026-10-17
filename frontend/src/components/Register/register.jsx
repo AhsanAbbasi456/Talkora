@@ -7,6 +7,8 @@ import { registerUser } from "../../redux/authSlice";
 import InputFields from "../InputFields/InputFields";
 import AuthLayout from "../authlayout/authlayout";
 
+const API_BASE_URL = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api`;
+
 // Password rules used for the checklist UI
 const PASSWORD_RULES = [
   { label: "At least 8 characters", test: (pw) => pw.length >= 8 },
@@ -138,7 +140,7 @@ export default function Register() {
     try {
       // STEP 1: Get Cloudinary signature from backend
       const signatureResponse = await fetch(
-        "http://localhost:3000/api/cloudinary/signature"
+        `${API_BASE_URL}/cloudinary/signature`
       );
 
       const signatureData = await signatureResponse.json();
@@ -226,7 +228,7 @@ export default function Register() {
 
     try {
       const response = await fetch(
-        "http://localhost:3000/api/auth/request-otp",
+        `${API_BASE_URL}/auth/request-otp`,
         {
           method: "POST",
           headers: {
@@ -270,7 +272,7 @@ export default function Register() {
 
     try {
       const response = await fetch(
-        "http://localhost:3000/api/auth/request-otp",
+        `${API_BASE_URL}/auth/request-otp`,
         {
           method: "POST",
           headers: {
@@ -315,7 +317,7 @@ export default function Register() {
     try {
       // STEP 1: Verify OTP
       const verifyResponse = await fetch(
-        "http://localhost:3000/api/auth/verify-otp",
+        `${API_BASE_URL}/auth/verify-otp`,
         {
           method: "POST",
           headers: {

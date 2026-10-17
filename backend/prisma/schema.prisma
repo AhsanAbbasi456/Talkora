@@ -19,14 +19,44 @@ model User {
   lastSeen      DateTime @default(now())
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+  pollVotes     PollVote[]
 
   otps                OtpVerification[]
   conversationMembers ConversationMember[]
-  sentMessages        Message[] @relation("SentMessages")
-  receivedMessages    Message[] @relation("ReceivedMessages")
-  reactions           Reaction[]       
-  notifications       Notification[] 
+
+  sentMessages     Message[] @relation("SentMessages")
+  receivedMessages Message[] @relation("ReceivedMessages")
+
+  reactions     Reaction[]
+  notifications Notification[]
+
+  createdGroups Conversation[] @relation("CreatedGroups")
+
+  callsMade     Call[] @relation("CallsMade")
+  callsReceived Call[] @relation("CallsReceived")
+
+  messageViews  MessageView[]   // NEW
 }
+
+model Call {
+  id              String    @id @default(uuid())
+  callerId        Int
+  calleeId        Int
+  callType        String    @default("audio")   // audio | video
+  status          String    @default("calling") // calling, ringing, ongoing, completed, missed, declined, busy, cancelled, failed
+  createdAt       DateTime  @default(now())
+  ringingAt       DateTime?
+  answeredAt      DateTime?
+  endedAt         DateTime?
+  durationSeconds Int       @default(0)
+
+  caller User @relation("CallsMade", fields: [callerId], references: [id], onDelete: Cascade)
+  callee User @relation("CallsReceived", fields: [calleeId], references: [id], onDelete: Cascade)
+
+  @@index([callerId, createdAt])
+  @@index([calleeId, createdAt])
+}
+
 model Notification {
   id        Int       @id @default(autoincrement())
   userId    Int
@@ -56,58 +86,106 @@ model OtpVerification {
 }
 
 model Conversation {
-  id            Int       @id @default(autoincrement())
+  description String?
+  id Int @id @default(autoincrement())
+
+  // DIRECT or GROUP
+  type String @default("DIRECT")
+
+  // Used only for GROUP conversations
+  name      String?
+  avatarUrl String?
+  createdBy Int?
+
   createdAt     DateTime  @default(now())
   lastMessageAt DateTime?
+
+  creator User? @relation("CreatedGroups", fields: [createdBy], references: [id], onDelete: SetNull)
 
   members  ConversationMember[]
   messages Message[]
 }
 
 model ConversationMember {
+  joinedAt DateTime @default(now())
   conversationId Int
   userId         Int
-  clearedAt      DateTime?
-  hidden         Boolean   @default(false)
+
+  // MEMBER or ADMIN
+  role String @default("MEMBER")
+
+  // Used when user clears/deletes a chat
+  clearedAt DateTime?
+
+  // Used to count unread group messages for this member
+  lastReadAt DateTime @default(now())
+
+  // Used when user deletes/hides a conversation
+  hidden Boolean @default(false)
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@id([conversationId, userId])
 }
 
 model Message {
-  id                 Int       @id @default(autoincrement())
-  conversationId     Int
-  senderId           Int
-  receiverId         Int
-  body               String
-  createdAt          DateTime  @default(now())
+  id             Int       @id @default(autoincrement())
+  conversationId Int
+  senderId       Int
+  receiverId     Int?      // null for group messages
+  body           String?
+  messageType    String    @default("TEXT") // TEXT, IMAGE, VIDEO, DOCUMENT, AUDIO, POLL
+  fileUrl        String?                    // set to null after the media is destroyed
+  fileName       String?
+  fileSize       Int?
+  mimeType       String?
+  duration       Int?      // voice note length in seconds
+  createdAt      DateTime  @default(now())
+
+  // NEW: view-once fields
+  viewOnce       Boolean   @default(false)  // sender turned on the "1" toggle
+  mediaExpired   Boolean   @default(false)  // true once the file has been deleted
+
   deletedForEveryone Boolean   @default(false)
   deletedAt          DateTime?
   deletedFor         Int[]     @default([])
 
-  // NEW: read receipts and edit
-  readAt             DateTime?
-  editedAt           DateTime?
+  readAt   DateTime?
+  editedAt DateTime?
 
-  // NEW: reply
-  replyToId          Int?
-  replyTo            Message?  @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
-  replies            Message[] @relation("MessageReplies")
+  replyToId Int?
+  replyTo   Message?  @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies   Message[] @relation("MessageReplies")
 
-  // NEW: reactions
-  reactions          Reaction[]
-
+  reactions    Reaction[]
+  poll         Poll?
+  views        MessageView[]  // NEW
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   sender       User         @relation("SentMessages", fields: [senderId], references: [id])
-  receiver     User         @relation("ReceivedMessages", fields: [receiverId], references: [id])
+  receiver     User?        @relation("ReceivedMessages", fields: [receiverId], references: [id])
 
   @@index([conversationId, createdAt])
   @@index([replyToId])
+  @@index([receiverId])
 }
 
-// NEW
+// NEW: tracks who has opened a view-once message
+// (a separate table so it also works for groups, where each member can open it once)
+model MessageView {
+  id        Int      @id @default(autoincrement())
+  messageId Int
+  userId    Int
+  viewedAt  DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])  // a user can only ever view once
+  @@index([messageId])
+}
+
 model Reaction {
   id        Int      @id @default(autoincrement())
   emoji     String
@@ -116,7 +194,45 @@ model Reaction {
   createdAt DateTime @default(now())
 
   message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([messageId, userId, emoji])
+}
+
+model Poll {
+  id            Int     @id @default(autoincrement())
+  messageId     Int     @unique
+  question      String
+  allowMultiple Boolean @default(false)
+  closed        Boolean @default(false)
+
+  message Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  options PollOption[]
+  votes   PollVote[]
+}
+
+model PollOption {
+  id     Int    @id @default(autoincrement())
+  pollId Int
+  text   String
+  sort   Int    @default(0)
+
+  poll  Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  votes PollVote[]
+}
+
+model PollVote {
+  id        Int      @id @default(autoincrement())
+  pollId    Int
+  optionId  Int
+  userId    Int
+  createdAt DateTime @default(now())
+
+  poll   Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  option PollOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  user   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([optionId, userId])
+  @@index([pollId])
 }

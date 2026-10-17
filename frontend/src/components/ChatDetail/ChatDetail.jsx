@@ -1,10 +1,16 @@
 import { useState, useEffect } from "react";
 import { useSelector } from "react-redux";
-import { Bell, Ban, Image as ImageIcon, X } from "lucide-react";
+import {
+  Bell,
+  Ban,
+  Image as ImageIcon,
+  Users,
+  X,
+} from "lucide-react";
 import { getAvatarColor } from "../../utils/avatarColor";
 import DeleteChatDialog from "../DeleteChatDialog/DeleteChatDialog";
 
-const API_BASE_URL = "http://localhost:3000/api";
+const API_BASE_URL = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api`;
 const DEFAULT_ABOUT = "Hey there! I am using Talkora.";
 
 export default function ChatDetails({ activeChat, onClose, onDeleteChat }) {
@@ -17,7 +23,7 @@ export default function ChatDetails({ activeChat, onClose, onDeleteChat }) {
   // FETCH LATEST "ABOUT" WHEN PANEL OPENS
   // ==========================================
   useEffect(() => {
-    if (!activeChat?.id) return;
+    if (!activeChat?.id || activeChat.type === "GROUP") return;
 
     // Reset to whatever we already have while we fetch fresh data
     setAbout(activeChat.about || DEFAULT_ABOUT);
@@ -46,7 +52,7 @@ export default function ChatDetails({ activeChat, onClose, onDeleteChat }) {
     return () => {
       cancelled = true;
     };
-  }, [activeChat?.id, token]);
+  }, [activeChat?.id, activeChat?.type, activeChat?.about, token]);
 
   if (!activeChat) return null;
 
@@ -94,15 +100,84 @@ export default function ChatDetails({ activeChat, onClose, onDeleteChat }) {
         </p>
       </div>
 
-      {/* About (the contact's status text) */}
-      <div className="px-5 py-4 border-b border-(--border)">
-        <p className="text-xs font-semibold text-gray-500 uppercase mb-2">
-          About
-        </p>
-        <p className="text-sm text-(--text-primary) break-words">
-          {about}
-        </p>
-      </div>
+      {activeChat.type === "GROUP" ? (
+        <div className="border-b border-(--border) px-5 py-4">
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-xs font-semibold uppercase text-gray-500">
+              Group members
+            </p>
+            <span className="text-xs text-(--text-muted)">
+              {activeChat.members?.length || 0}
+            </span>
+          </div>
+
+          {activeChat.members?.length ? (
+            <div className="space-y-3">
+              {activeChat.members.map((member) => {
+                const person = member.user || {};
+                const name = person.name || "Talkora user";
+                const initials = name
+                  .split(" ")
+                  .map((part) => part[0])
+                  .join("")
+                  .slice(0, 2)
+                  .toUpperCase();
+
+                return (
+                  <div
+                    key={member.userId}
+                    className="flex min-w-0 items-center gap-3"
+                  >
+                    {person.avatarUrl ? (
+                      <img
+                        src={person.avatarUrl}
+                        alt=""
+                        className="h-9 w-9 shrink-0 rounded-full border border-(--border) object-cover"
+                      />
+                    ) : (
+                      <div
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-[#F8FAFC]"
+                        style={{
+                          backgroundColor: getAvatarColor(
+                            person.id || member.userId
+                          ),
+                        }}
+                      >
+                        {initials || <Users size={15} />}
+                      </div>
+                    )}
+
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-(--text-primary)">
+                        {name}
+                      </p>
+                    </div>
+
+                    {member.role === "ADMIN" && (
+                      <span className="shrink-0 rounded-full bg-(--accent)/15 px-2 py-0.5 text-[10px] font-medium text-(--accent)">
+                        Admin
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-sm text-(--text-muted)">
+              No member details available.
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="border-b border-(--border) px-5 py-4">
+          <p className="mb-2 text-xs font-semibold uppercase text-gray-500">
+            About
+          </p>
+          <p className="break-words text-sm text-(--text-primary)">
+            {about}
+          </p>
+        </div>
+      )}
 
       <div className="px-5 py-4 border-b border-[#334155]">
         <p className="text-xs font-semibold text-gray-500 uppercase mb-3">

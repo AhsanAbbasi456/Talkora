@@ -3,6 +3,8 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Mail, ArrowLeft } from "lucide-react";
 
+const API_BASE_URL = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api`;
+
 export default function ForgotPassword() {
   const navigate = useNavigate();
 
@@ -18,7 +20,7 @@ export default function ForgotPassword() {
 
     try {
       const response = await fetch(
-        "http://localhost:3000/api/auth/forgot-password",
+        `${API_BASE_URL}/auth/forgot-password`,
         {
           method: "POST",
           headers: {

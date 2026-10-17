@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { KeyRound, ArrowLeft } from "lucide-react";
 
+const API_BASE_URL = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api`;
+
 export default function VerifyResetOtp() {
   const navigate = useNavigate();
 
@@ -27,7 +29,7 @@ export default function VerifyResetOtp() {
 
     try {
       const response = await fetch(
-        "http://localhost:3000/api/auth/verify-reset-otp",
+        `${API_BASE_URL}/auth/verify-reset-otp`,
         {
           method: "POST",
           headers: {

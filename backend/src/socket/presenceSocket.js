@@ -1,4 +1,5 @@
 const prisma = require("../config/prisma");
+const { deliverPendingCalls } = require("./call.socket");
 
 // userId -> number of open sockets (tabs/devices)
 const connections = new Map();
@@ -13,17 +14,46 @@ const emitOfflineMessageNotifications = async (io, userId) => {
   try {
     const memberships = await prisma.conversationMember.findMany({
       where: { userId },
-      select: { conversationId: true, clearedAt: true },
+      select: {
+        conversationId: true,
+        clearedAt: true,
+        lastReadAt: true,
+        conversation: {
+          select: {
+            type: true,
+            name: true,
+          },
+        },
+      },
     });
 
-    const clearedMap = new Map(
-      memberships.map((m) => [m.conversationId, m.clearedAt])
+    const membershipMap = new Map(
+      memberships.map((membership) => [
+        membership.conversationId,
+        membership,
+      ])
     );
 
     const unread = await prisma.message.findMany({
       where: {
-        receiverId: userId,
-        readAt: null,
+        OR: [
+          {
+            receiverId: userId,
+            readAt: null,
+          },
+          {
+            receiverId: null,
+            senderId: { not: userId },
+            conversationId: {
+              in: memberships
+                .filter(
+                  (membership) =>
+                    membership.conversation.type === "GROUP"
+                )
+                .map((membership) => membership.conversationId),
+            },
+          },
+        ],
         deletedForEveryone: false,
         NOT: { deletedFor: { has: userId } },
       },
@@ -34,32 +64,58 @@ const emitOfflineMessageNotifications = async (io, userId) => {
       },
     });
 
-    // group by sender: latest message + count
-    const bySender = new Map();
+    // Direct chats are grouped by sender; group chats by conversation.
+    const notifications = new Map();
 
     for (const message of unread) {
-      const clearedAt = clearedMap.get(message.conversationId);
+      const membership = membershipMap.get(
+        message.conversationId
+      );
+      if (!membership) continue;
 
-      if (clearedAt && message.createdAt <= clearedAt) continue;
+      const isGroup =
+        membership.conversation.type === "GROUP";
+      const cutoff = isGroup
+        ? new Date(
+            Math.max(
+              membership.lastReadAt.getTime(),
+              membership.clearedAt?.getTime() || 0
+            )
+          )
+        : membership.clearedAt;
 
-      const entry = bySender.get(message.senderId);
+      if (cutoff && message.createdAt <= cutoff) continue;
+
+      const key = isGroup
+        ? `group:${message.conversationId}`
+        : `direct:${message.senderId}`;
+      const entry = notifications.get(key);
 
       if (entry) {
         entry.count += 1;
       } else {
-        bySender.set(message.senderId, { latest: message, count: 1 });
+        notifications.set(key, {
+          latest: message,
+          count: 1,
+          membership,
+          isGroup,
+        });
       }
     }
 
-    for (const { latest, count } of bySender.values()) {
+    for (const { latest, count, membership, isGroup } of notifications.values()) {
       io.to(`user:${userId}`).emit("offlineMessageNotification", {
         id: latest.id,
         senderId: latest.senderId,
-        receiverId: userId,
         senderName: latest.sender?.name || "New message",
         body: latest.body,
         createdAt: latest.createdAt,
         count,
+        conversationId: latest.conversationId,
+        conversationType: membership.conversation.type,
+        ...(isGroup
+          ? { conversationName: membership.conversation.name }
+          : { receiverId: userId }),
       });
     }
   } catch (error) {
@@ -80,6 +136,9 @@ const registerPresenceSocket = (io, socket) => {
     .update({ where: { id: userId }, data: { isOnline: true } })
     .then(() => {
       io.emit("presence", { userId, isOnline: true });
+      return deliverPendingCalls(io, userId);
+    })
+    .then(() => {
       return emitOfflineMessageNotifications(io, userId);
     })
     .catch((err) => console.error("Presence online error:", err));
