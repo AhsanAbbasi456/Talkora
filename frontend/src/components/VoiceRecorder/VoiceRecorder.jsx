@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Trash2, Send } from "lucide-react";
+import ViewOnceIcon from "../ViewOnceIcon/ViewOnceIcon";
 
 const TYPES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
 
@@ -8,6 +9,8 @@ export const formatDuration = (s = 0) =>
 
 export default function VoiceRecorder({ onSend, onCancel }) {
   const [seconds, setSeconds] = useState(0);
+  const [viewOnce, setViewOnce] = useState(false);
+  const viewOnceRef = useRef(false); // read when the recording stops
   const recorder = useRef(null);
   const shouldSend = useRef(false);
   const callbacks = useRef({});
@@ -40,7 +43,11 @@ export default function VoiceRecorder({ onSend, onCancel }) {
 
           const type = rec.mimeType.split(";")[0] || "audio/webm";
           const ext = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm";
-          callbacks.current.onSend(new File(chunks, `voice-note.${ext}`, { type }), duration);
+          callbacks.current.onSend(
+            new File(chunks, `voice-note.${ext}`, { type }),
+            duration,
+            viewOnceRef.current
+          );
         };
 
         rec.start();
@@ -62,6 +69,11 @@ export default function VoiceRecorder({ onSend, onCancel }) {
     if (recorder.current?.state !== "recording") return;
     shouldSend.current = true;
     recorder.current.stop();
+  };
+
+  const toggleViewOnce = () => {
+    viewOnceRef.current = !viewOnceRef.current;
+    setViewOnce(viewOnceRef.current);
   };
 
   const cancel = () => {
@@ -96,7 +108,20 @@ export default function VoiceRecorder({ onSend, onCancel }) {
       <div className="flex-1 flex items-center gap-2 px-4 py-2.5 bg-(--input-bg) border border-(--border) rounded-3xl text-sm text-(--text-primary)">
         <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
         <span className="tabular-nums">{formatDuration(seconds)}</span>
-        <span className="text-xs text-(--text-muted)">Recording...</span>
+        <span className="flex-1 truncate text-xs text-(--text-muted)">
+          {viewOnce ? "Voice message set to view once" : "Recording..."}
+        </span>
+        <button
+          type="button"
+          onClick={toggleViewOnce}
+          aria-pressed={viewOnce}
+          title={viewOnce ? "View once is on" : "Send as view once"}
+          className={`rounded-full transition ${
+            viewOnce ? "" : "text-(--text-muted) hover:text-(--text-primary)"
+          }`}
+        >
+          <ViewOnceIcon on={viewOnce} size={24} />
+        </button>
       </div>
 
       <button

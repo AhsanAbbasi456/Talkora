@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useDispatch, useSelector } from "react-redux";
-import { Mail, Lock, Eye, EyeOff } from "lucide-react";
+import { Mail, Lock, Eye, EyeOff, Clock, ChevronRight } from "lucide-react";
 import {
   GoogleOAuthProvider,
   useGoogleLogin,
@@ -14,6 +14,7 @@ import {
 
 import InputFields from "../InputFields/InputFields";
 import AuthLayout from "../authlayout/authlayout";
+import { getStatusToken, clearStatusToken } from "../../utils/requestStatus";
 
 function LoginForm() {
   const navigate = useNavigate();
@@ -26,7 +27,9 @@ function LoginForm() {
     password: "",
   });
 
-  const [error, setError] = useState("");
+  // e.g. "An admin signed you out" after a forced logout
+  const notice = useLocation().state?.notice;
+  const [error, setError] = useState(notice || "");
   const [showPassword, setShowPassword] = useState(false);
 
   // ==========================================
@@ -41,6 +44,16 @@ function LoginForm() {
     setError("");
   };
 
+  // approved -> chats; pending / suspended / banned -> status page
+  const openAfterLogin = (payload) => {
+    if (payload.account) return navigate("/account-status", { state: payload.account });
+    clearStatusToken(); // approved and logged in: nothing left to track
+    navigate("/home");
+  };
+
+  // someone who signed up on this browser and is still waiting
+  const [hasRequest] = useState(() => Boolean(getStatusToken()));
+
   // ==========================================
   // NORMAL EMAIL/PASSWORD LOGIN
   // ==========================================
@@ -51,7 +64,7 @@ function LoginForm() {
     const resultAction = await dispatch(loginUser(formData));
 
     if (loginUser.fulfilled.match(resultAction)) {
-      navigate("/home");
+      openAfterLogin(resultAction.payload);
       return;
     }
 
@@ -72,7 +85,7 @@ function LoginForm() {
       );
 
       if (googleLogin.fulfilled.match(resultAction)) {
-        navigate("/home");
+        openAfterLogin(resultAction.payload);
         return;
       }
 
@@ -90,6 +103,21 @@ function LoginForm() {
   return (
     <AuthLayout activeTab="login">
       <form onSubmit={handleSubmit} autoComplete="off">
+        {/* Waiting for approval? Jump back to the tracking page */}
+        {hasRequest && (
+          <Link
+            to="/account-status"
+            className="mb-4 flex items-center gap-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2.5 text-sm text-amber-100 transition hover:bg-amber-400/15"
+          >
+            <Clock size={18} className="shrink-0 text-amber-300" />
+            <span className="flex-1">
+              <span className="block font-medium">You have a sign-up request</span>
+              <span className="block text-xs text-amber-100/80">Track your request status</span>
+            </span>
+            <ChevronRight size={18} className="shrink-0 text-amber-300" />
+          </Link>
+        )}
+
         {/* Error message */}
         {error && (
           <p className="text-red-400 text-sm mb-4 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">

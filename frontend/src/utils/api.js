@@ -11,7 +11,14 @@ export async function api(path, token, method = "GET", body) {
     body: body && JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.message || data.error || "Something went wrong");
+  if (!res.ok) {
+    // status + code let callers react, e.g. code "PLUS_REQUIRED" opens the Upgrade window
+    throw Object.assign(new Error(data.message || data.error || "Something went wrong"), {
+      status: res.status,
+      code: data.code,
+      feature: data.feature,
+    });
+  }
   return data;
 }
 

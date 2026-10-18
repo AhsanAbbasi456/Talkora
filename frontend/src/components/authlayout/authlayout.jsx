@@ -2,9 +2,11 @@ import { Link } from "react-router-dom";
 import backgroundImage from "../../assets/images/background.png";
 
 export default function AuthLayout({ activeTab, children }) {
+  // Small screens show the right side of the background, so the hero text
+  // baked into the image is not cut off behind the form card.
   return (
     <div
-      className="relative min-h-screen w-full flex bg-cover bg-center bg-fixed"
+      className="relative min-h-screen w-full flex bg-cover bg-right lg:bg-center lg:bg-fixed"
       style={{
         backgroundImage: `linear-gradient(to right, rgba(15,10,31,0) 0%, rgba(15,10,31,0.02) 45%, rgba(15,10,31,0.35) 74%, rgba(15,10,31,0.72) 100%), url(${backgroundImage})`,
       }}

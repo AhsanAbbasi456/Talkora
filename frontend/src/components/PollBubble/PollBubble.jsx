@@ -13,7 +13,7 @@ export default function PollBubble({ poll, isOwn, currentUserId, onVote }) {
   const fillColor = isOwn ? "bg-white/30" : "bg-(--accent)/40";
 
   return (
-    <div className="w-64 sm:w-72">
+    <div className="w-56 sm:w-72">
       {/* Header */}
       <div className={`mb-1.5 flex items-center gap-1.5 text-[11px] ${mutedText}`}>
         <BarChart2 size={14} />

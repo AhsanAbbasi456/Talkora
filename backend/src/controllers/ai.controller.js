@@ -1,6 +1,6 @@
 const prisma = require("../config/prisma");
 const { callAi } = require("../services/aiBot");
-const BOT_ID = Number(process.env.AI_BOT_ID);
+const { bot } = require("../services/botAccount"); // bot.id = the Talkora AI account
 const getAiChat = async (req, res) => {
   try {
     // tries the common names, until we confirm which one your middleware uses
@@ -11,7 +11,7 @@ const getAiChat = async (req, res) => {
         type: "DIRECT",
         AND: [
           { members: { some: { userId } } },
-          { members: { some: { userId: BOT_ID } } },
+          { members: { some: { userId: bot.id } } },
         ],
       },
     });
@@ -20,7 +20,7 @@ const getAiChat = async (req, res) => {
       chat = await prisma.conversation.create({
         data: {
           type: "DIRECT",
-          members: { create: [{ userId }, { userId: BOT_ID }] },
+          members: { create: [{ userId }, { userId: bot.id }] },
         },
       });
     }

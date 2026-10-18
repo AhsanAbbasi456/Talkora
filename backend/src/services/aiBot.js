@@ -1,6 +1,7 @@
 const prisma = require("../config/prisma");
 
-const BOT_ID = Number(process.env.AI_BOT_ID);
+const { bot } = require("./botAccount"); // bot.id = the Talkora AI account
+const { useAiQuestion } = require("./plans");
 const BUSY = "Talkora AI is busy right now. Please try again.";
 const SYSTEM =
   "You are Talkora AI, a friendly assistant inside a chat app. Keep answers short. Reply in the same language as the user.";
@@ -46,7 +47,8 @@ const callAi = async (messages, system = SYSTEM) => {
   return null;
 };
 
-const askAi = async (conversationId, receiverId) => {
+// askerId = the person who asked (counts toward their daily free limit)
+const askAi = async (conversationId, receiverId, askerId) => {
   // last 10 text messages = the bot's memory
   const history = await prisma.message.findMany({
     where: { conversationId, body: { not: null }, deletedForEveryone: false },
@@ -55,7 +57,7 @@ const askAi = async (conversationId, receiverId) => {
   });
 
   const messages = history.reverse().map((m) => ({
-    role: m.senderId === BOT_ID ? "assistant" : "user",
+    role: m.senderId === bot.id ? "assistant" : "user",
     content: m.body,
   }));
 
@@ -63,12 +65,18 @@ const askAi = async (conversationId, receiverId) => {
   const waiting = now - (lastAsked.get(conversationId) || 0) < COOLDOWN_MS;
   if (!waiting) lastAsked.set(conversationId, now);
 
-  const reply = waiting
-    ? "Please wait a few seconds before asking again."
-    : (await callAi(messages)) || BUSY;
+  let reply;
+  if (waiting) {
+    reply = "Please wait a few seconds before asking again.";
+  } else {
+    const quota = askerId ? await useAiQuestion(askerId) : { allowed: true };
+    reply = quota.allowed
+      ? (await callAi(messages)) || BUSY
+      : `You've used all ${quota.limit} free Talkora AI questions for today. ✨ Upgrade to Talkora Plus for unlimited questions, or come back tomorrow.`;
+  }
 
   const botMessage = await prisma.message.create({
-    data: { conversationId, senderId: BOT_ID, receiverId, body: reply },
+    data: { conversationId, senderId: bot.id, receiverId, body: reply },
   });
 
   await prisma.conversation.update({

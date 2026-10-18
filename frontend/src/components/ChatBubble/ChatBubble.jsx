@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useSelector } from "react-redux";
+import { useDispatch, useSelector } from "react-redux";
+import { openUpgrade } from "../../redux/planSlice";
+import PlusTag from "../Plus/PlusTag";
 import {
   ChevronDown,
   Copy,
@@ -59,6 +61,9 @@ export default function ChatBubble({
   const [viewOnceError, setViewOnceError] = useState("");
 
   const { token } = useSelector((state) => state.auth);
+  const plan = useSelector((state) => state.plan);
+  const dispatch = useDispatch();
+  const translateLocked = plan.loaded && !plan.isPlus;
   const menuRef = useRef(null);
   const chevronRef = useRef(null);
 
@@ -171,13 +176,15 @@ export default function ChatBubble({
       setTranslateError("");
       return;
     }
+    if (translateLocked) return dispatch(openUpgrade("Translate"));
     setTranslating(true);
     try {
       const data = await api("/ai/translate", token, "POST", {
         text: messageText,
       });
       setTranslation(data.translation || "");
-    } catch {
+    } catch (error) {
+      if (error.code === "PLUS_REQUIRED") return dispatch(openUpgrade("Translate"));
       setTranslateError("Could not translate. Try again.");
     } finally {
       setTranslating(false);
@@ -279,6 +286,7 @@ export default function ChatBubble({
                 {translation || translateError
                   ? "Hide translation"
                   : "Translate"}
+                {translateLocked && <PlusTag className="ml-auto" />}
               </button>
             )}
 

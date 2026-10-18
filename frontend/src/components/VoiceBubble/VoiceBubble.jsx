@@ -130,7 +130,7 @@ export default function VoiceBubble({ message, src, isOwn }) {
   const idleColor = isOwn ? "bg-white/40" : "bg-(--text-muted)/50";
 
   return (
-    <div className="flex min-w-64 items-center gap-3 py-1">
+    <div className="flex min-w-52 sm:min-w-64 items-center gap-3 py-1">
       <button
         type="button"
         onClick={toggle}

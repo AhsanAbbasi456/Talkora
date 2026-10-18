@@ -8,6 +8,7 @@ const bot = await prisma.user.upsert({
     name: "Talkora AI",
     email: "ai@talkora.app",
     password: "not-a-real-password-nobody-can-login",
+    status: "APPROVED",
   },
 });
 

@@ -6,13 +6,13 @@ import {
   VideoOff,
   Phone,
   Lock,
-  MessageCircle,
   Minus,
   Maximize2,
   Minimize2,
   X,
 } from "lucide-react";
 import { getAvatarColor } from "../../utils/avatarColor";
+import logo from "../../assets/images/logo.png";
 
 const fmt = (s) =>
   `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
@@ -113,10 +113,11 @@ function TopBar({
       }`}
     >
       <div className="flex items-center gap-2 min-w-0">
-        <span className="w-6 h-6 rounded-full bg-[#25d366] flex items-center justify-center shrink-0">
-          <MessageCircle size={14} className="text-[#06230f]" />
-        </span>
-        <span className="text-[#e9edef] font-medium text-sm">Talkora</span>
+        <img
+          src={logo}
+          alt="Talkora"
+          className="h-7 w-auto max-w-20 object-contain object-left shrink-0"
+        />
       </div>
 
       <div className="flex items-center gap-1.5 shrink-0">

@@ -1,9 +1,16 @@
 const prisma = require("../config/prisma");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer");
 const crypto = require("crypto");
 const { registerSchema, loginSchema } = require("../validators/auth.validators");
+const { sendEmail } = require("../services/mailer");
+const {
+  refreshStatus,
+  blockedResponse,
+  statusMessage,
+  makeStatusToken,
+  readStatusToken,
+} = require("../utils/access");
 
 // ---------- helpers ----------
 
@@ -64,7 +71,7 @@ const findUserByEmail = (email) =>
 // JWT + the user object the frontend expects
 const sendSession = (res, user, message, status = 200) => {
   const token = jwt.sign(
-    { userId: user.id, email: user.email },
+    { userId: user.id, email: user.email, tv: user.tokenVersion },
     process.env.JWT_SECRET,
     { expiresIn: "1h" }
   );
@@ -79,38 +86,33 @@ const sendSession = (res, user, message, status = 200) => {
       avatarUrl: user.avatarUrl,
       about: user.about,
       themeMode: user.themeMode,
+      role: user.role,
     },
   });
 };
 
-// ---------- OTP ----------
-
-const isDevEmailConfig = () => {
-  const user = process.env.EMAIL_USER || "";
-  const pass = process.env.EMAIL_PASS || "";
-
-  return (
-    !user ||
-    !pass ||
-    user.includes("your_email") ||
-    pass.includes("your_gmail") ||
-    user.includes("example") ||
-    pass.includes("example")
-  );
+// Approved users get a session; everyone else gets a 403 explaining why
+const sendSessionIfApproved = async (res, user, message) => {
+  user = await refreshStatus(user);
+  if (user.status !== "APPROVED") {
+    return res.status(403).json({ ...blockedResponse(user), statusToken: makeStatusToken(user) });
+  }
+  sendSession(res, user, message);
 };
 
-const sendOtpEmail = async (email, otp) => {
-  if (isDevEmailConfig()) return { devMode: true };
-
-  const transporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+// Live badge on the admin page when someone new is waiting
+const notifyAdmins = (req, user) =>
+  req.app.get("io")?.to("admins").emit("admin:newRequest", {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    createdAt: user.createdAt,
   });
 
-  await transporter.verify();
+// ---------- OTP ----------
 
-  await transporter.sendMail({
-    from: `"Talkora" <${process.env.EMAIL_USER}>`,
+const sendOtpEmail = (email, otp) =>
+  sendEmail({
     to: email,
     subject: "Your Talkora Verification Code",
     text: `Your Talkora verification code is ${otp}. This code expires in 5 minutes.`,
@@ -126,9 +128,6 @@ const sendOtpEmail = async (email, otp) => {
       </div>
     `,
   });
-
-  return { devMode: false };
-};
 
 // create + store + email an OTP; returns { devOtp } only in dev mode
 const issueOtp = async (email, purpose, userId) => {
@@ -303,10 +302,18 @@ const register = handler("register", "Registration failed", async (req, res) => 
       password: await bcrypt.hash(password, 10),
       emailVerified: true,
       avatarUrl: picture || null,
+      status: "PENDING",
     },
   });
 
-  sendSession(res, user, "User registered successfully", 201);
+  notifyAdmins(req, user);
+
+  // No session yet: an admin has to approve the account first
+  res.status(201).json({
+    message: "Your email is verified. An admin will review your account soon.",
+    accountStatus: "PENDING",
+    statusToken: makeStatusToken(user),
+  });
 });
 
 const login = handler("login", "Login failed", async (req, res) => {
@@ -319,7 +326,7 @@ const login = handler("login", "Login failed", async (req, res) => {
     fail(401, "Invalid password");
   }
 
-  sendSession(res, user, "Login successful");
+  await sendSessionIfApproved(res, user, "Login successful");
 });
 
 // ---------- Google login ----------
@@ -349,8 +356,10 @@ const googleLogin = handler("googleLogin", "Google login failed", async (req, re
         password: await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10),
         emailVerified: true,
         avatarUrl: picture || null,
+        status: "PENDING",
       },
     });
+    notifyAdmins(req, user);
   } else if (!user.emailVerified) {
     user = await prisma.user.update({
       where: { id: user.id },
@@ -358,10 +367,41 @@ const googleLogin = handler("googleLogin", "Google login failed", async (req, re
     });
   }
 
-  sendSession(res, user, "Google login successful");
+  await sendSessionIfApproved(res, user, "Google login successful");
+});
+
+// ---------- request tracking ----------
+
+// GET /api/auth/request-status   (Authorization: Bearer <tracking pass>)
+const requestStatus = handler("requestStatus", "Could not load request status", async (req, res) => {
+  const token = (req.headers.authorization || "").replace(/^Bearer /, "");
+
+  let userId;
+  try {
+    userId = readStatusToken(token);
+  } catch {
+    fail(401, "This tracking link has expired. Log in to see your request status.");
+  }
+
+  let user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) fail(404, "Account not found");
+  user = await refreshStatus(user);
+
+  res.json({
+    accountStatus: user.status,
+    message:
+      user.status === "APPROVED" ? "Your account is approved. You can log in now." : statusMessage(user),
+    reason: user.statusReason || null,
+    suspendedUntil: user.suspendedUntil || null,
+    name: user.name,
+    email: user.email,
+    createdAt: user.createdAt,
+    statusChangedAt: user.statusChangedAt,
+  });
 });
 
 module.exports = {
+  requestStatus,
   requestOtp,
   verifyOtp,
   forgotPassword,

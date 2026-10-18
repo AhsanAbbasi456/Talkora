@@ -1,25 +1,16 @@
 // routes/viewOnce.js
 const express = require("express");
 const fs = require("fs");
-const path = require("path");
 const { Readable } = require("stream");
 const prisma = require("../config/prisma");
-const cloudinary = require("../config/cloudinary");
 const auth = require("../middleware/auth.middleware");
+const {
+  isCloudinaryUrl,
+  getLocalPath,
+  destroyViewOnceMedia,
+} = require("../utils/viewOnceMedia");
 
 const router = express.Router();
-
-const isCloudinaryUrl = (url) => /^https?:\/\//i.test(url);
-
-// Turns a Cloudinary URL into its publicId (needed to delete the file)
-// .../image/upload/v123456/folder/name.jpg  ->  folder/name
-const getCloudinaryPublicId = (url) => {
-  const afterUpload = new URL(url).pathname.split("/upload/")[1];
-  if (!afterUpload) return null;
-  const parts = afterUpload.split("/");
-  if (/^v\d+$/.test(parts[0])) parts.shift(); // remove the version part
-  return decodeURIComponent(parts.join("/")).replace(/\.[^/.]+$/, "");
-};
 
 router.get("/messages/:id/view-once", auth, async (req, res) => {
   const messageId = parseInt(req.params.id, 10);
@@ -72,12 +63,7 @@ router.get("/messages/:id/view-once", auth, async (req, res) => {
       }
       stream = Readable.fromWeb(upstream.body);
     } else {
-      // path.basename blocks tricks like "../../secret"
-      localPath = path.join(
-        process.cwd(),
-        "uploads",
-        path.basename(message.fileUrl),
-      );
+      localPath = getLocalPath(message.fileUrl);
       if (!fs.existsSync(localPath)) {
         return res.status(410).json({ error: "File no longer available" });
       }
@@ -109,28 +95,7 @@ router.get("/messages/:id/view-once", auth, async (req, res) => {
     // 8. After the file is fully sent: tell the sender, and destroy the file if everyone opened it
     res.on("finish", async () => {
       try {
-        if (everyoneViewed) {
-          if (fromCloudinary) {
-            const publicId = getCloudinaryPublicId(message.fileUrl);
-            if (publicId) {
-              await cloudinary.uploader.destroy(publicId, {
-                resource_type:
-                  message.messageType === "VIDEO"
-                    ? "video"
-                    : message.messageType === "AUDIO"
-                      ? "raw"
-                      : "image",
-              });
-            }
-          } else {
-            await fs.promises.unlink(localPath);
-          }
-
-          await prisma.message.update({
-            where: { id: messageId },
-            data: { mediaExpired: true, fileUrl: null },
-          });
-        }
+        if (everyoneViewed) await destroyViewOnceMedia(message);
 
         // Real-time: sender sees "Opened", viewer's other tabs update too
         const io = req.app.get("io");

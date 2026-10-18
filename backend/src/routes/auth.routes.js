@@ -9,6 +9,7 @@ const {
   register,
   login,
   googleLogin,
+  requestStatus,
 } = require("../controllers/auth.controller");
 
 const router = express.Router();
@@ -44,5 +45,11 @@ router.post("/login", login);
 // ================================
 
 router.post("/google", googleLogin);
+
+// ================================
+// Track a sign-up request (pending / approved / ...)
+// ================================
+
+router.get("/request-status", requestStatus);
 
 module.exports = router;

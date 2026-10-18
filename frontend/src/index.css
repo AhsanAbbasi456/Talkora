@@ -15,6 +15,11 @@
 	--text-secondary: #CBD5E1;
 	--text-muted: #94A3B8;
 	--status: #10B981;
+	--status-pending: #FBBF24;
+	--status-approved: #34D399;
+	--status-suspended: #FB923C;
+	--status-banned: #F87171;
+	--chart-1: #0D9488;
 }
 
 .theme-light {
@@ -27,6 +32,10 @@
 	--text-secondary: #334155;
 	--text-muted: #64748B;
 	--status: #059669;
+	--status-pending: #B45309;
+	--status-approved: #047857;
+	--status-suspended: #C2410C;
+	--status-banned: #B91C1C;
 }
 
 * {

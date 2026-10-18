@@ -360,9 +360,9 @@ export default function Register() {
 
       // STEP 3: Registration successful
       if (registerUser.fulfilled.match(resultAction)) {
-        console.log("Registration successful");
-
-        navigate("/login");
+        // new accounts wait for an admin before they can log in
+        const { account } = resultAction.payload;
+        navigate(account ? "/account-status" : "/login", { state: account });
         return;
       }
 

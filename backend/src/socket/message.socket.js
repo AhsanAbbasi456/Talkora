@@ -5,7 +5,7 @@ const sanitizeMessage = require("../utils/sanitizeMessage"); // NEW
 // HELPERS
 // ==========================================
 const { askAi } = require("../services/aiBot");
-const BOT_ID = Number(process.env.AI_BOT_ID);
+const { bot } = require("../services/botAccount"); // bot.id = the Talkora AI account
 const MENTION = /@talkora\s*ai/i;
 const SENDER_SELECT = { id: true, name: true, avatarUrl: true };
 const FILE_LABELS = { IMAGE: "📷 Photo", VIDEO: "🎥 Video", DOCUMENT: "📄 Document", POLL: "📊 Poll", AUDIO: "🎤 Voice message" };
@@ -208,17 +208,17 @@ const fetchMessages = async (conversation, me) => {
 // When someone writes to the Talkora AI chat, the bot answers
 const replyFromBot = async (io, conversationId, userId) => {
   const room = `user:${userId}`;
-  io.to(room).emit("typing", { userId: BOT_ID, isTyping: true });
+  io.to(room).emit("typing", { userId: bot.id, isTyping: true });
 
-  const botMessage = await askAi(conversationId, userId);
+  const botMessage = await askAi(conversationId, userId, userId);
 
-  io.to(room).emit("typing", { userId: BOT_ID, isTyping: false });
+  io.to(room).emit("typing", { userId: bot.id, isTyping: false });
   io.to(room).emit("newMessage", toPayload(botMessage));
 };
 // Someone wrote @Talkora AI inside a normal chat: the bot answers there
 // receiverId is null for groups
-const replyToMention = async (io, conversation, receiverId, memberIds) => {
-  const botMessage = await askAi(conversation.id, receiverId);
+const replyToMention = async (io, conversation, receiverId, memberIds, askerId) => {
+  const botMessage = await askAi(conversation.id, receiverId, askerId);
 
   sendTo(io, memberIds, "newMessage", {
     ...toPayload(botMessage, null, "Talkora AI"),
@@ -244,13 +244,13 @@ const deliverDirect = async (io, socket, conversation, to, body, replyTarget = n
   const payload = toPayload(message, replyTarget ? previewText(replyTarget) : null);
   socket.emit("messageSent", payload);
   io.to(`user:${to}`).emit("newMessage", payload);
-     if (to === BOT_ID) {
+     if (to === bot.id) {
     replyFromBot(io, conversation.id, Number(socket.userId)).catch((e) =>
       console.error("Talkora AI error:", e)
     );
-    } else if (MENTION.test(body) || replyTarget?.senderId === BOT_ID) {
+    } else if (MENTION.test(body) || replyTarget?.senderId === bot.id) {
     const askerId = Number(socket.userId);
-    replyToMention(io, conversation, askerId, [askerId, to]).catch((e) =>
+    replyToMention(io, conversation, askerId, [askerId, to], askerId).catch((e) =>
       console.error("Talkora AI error:", e)
     );
   }
@@ -336,7 +336,7 @@ const registerMessageSocket = (io, socket) => {
                 sendTo(io, memberIds.filter((id) => id !== me), "newMessage", payload);
 
         if (MENTION.test(body)) {
-          replyToMention(io, conversation, null, memberIds).catch((e) =>
+          replyToMention(io, conversation, null, memberIds, me).catch((e) =>
             console.error("Talkora AI error:", e)
           );
         }

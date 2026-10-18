@@ -1,6 +1,15 @@
 import { createSlice, createAsyncThunk } from "@reduxjs/toolkit";
+import { saveStatusToken } from "../utils/requestStatus";
 
 const API_BASE_URL = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api`;
+
+// What the account-status page needs to explain why the user cannot sign in
+const accountFrom = (data) => ({
+  accountStatus: data.accountStatus,
+  message: data.message,
+  reason: data.reason || null,
+  suspendedUntil: data.suspendedUntil || null,
+});
 
 // ==========================================
 // REGISTER USER
@@ -27,6 +36,12 @@ export const registerUser = createAsyncThunk(
       );
 
       const data = await response.json();
+
+      // pending / rejected / suspended / banned: no session, show the status page
+      if (data.accountStatus) {
+        saveStatusToken(data.statusToken); // lets the user track the request later
+        return { account: accountFrom(data) };
+      }
 
       if (!response.ok) {
         return rejectWithValue(
@@ -71,6 +86,12 @@ export const loginUser = createAsyncThunk(
 
       const data = await response.json();
 
+      // pending / rejected / suspended / banned: no session, show the status page
+      if (data.accountStatus) {
+        saveStatusToken(data.statusToken); // lets the user track the request later
+        return { account: accountFrom(data) };
+      }
+
       if (!response.ok) {
         return rejectWithValue(
           data.message ||
@@ -111,6 +132,12 @@ export const googleLogin = createAsyncThunk(
       );
 
       const data = await response.json();
+
+      // pending / rejected / suspended / banned: no session, show the status page
+      if (data.accountStatus) {
+        saveStatusToken(data.statusToken); // lets the user track the request later
+        return { account: accountFrom(data) };
+      }
 
       if (!response.ok) {
         return rejectWithValue(
@@ -257,6 +284,7 @@ const authSlice = createSlice({
         registerUser.fulfilled,
         (state, action) => {
           state.loading = false;
+          if (!action.payload.token) return; // account not approved yet
 
           state.user =
             action.payload.user;
@@ -320,6 +348,7 @@ const authSlice = createSlice({
         loginUser.fulfilled,
         (state, action) => {
           state.loading = false;
+          if (!action.payload.token) return; // account not approved yet
 
           state.user =
             action.payload.user;
@@ -377,6 +406,7 @@ const authSlice = createSlice({
         googleLogin.fulfilled,
         (state, action) => {
           state.loading = false;
+          if (!action.payload.token) return; // account not approved yet
 
           state.user =
             action.payload.user;

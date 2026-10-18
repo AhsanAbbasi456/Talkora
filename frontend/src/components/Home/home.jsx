@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useSelector } from "react-redux";
+import { useDispatch, useSelector } from "react-redux";
 import socket from "../../socket";
 import { listen } from "../../utils/socketListen";
 import TopBar from "../TopBar/TopBar";
@@ -10,6 +10,9 @@ import ChatDetails from "../ChatDetail/ChatDetail";
 import GroupInfo from "../GroupInfo/GroupInfo";
 import Loader from "../Loader/Loader";
 import { getAvatarColor } from "../../utils/avatarColor";
+import useSessionSocket from "../../hooks/useSessionSocket";
+import { fetchPlan } from "../../redux/planSlice";
+import UpgradeModal from "../Plus/UpgradeModal";
 
 const API_BASE_URL = `${import.meta.env.VITE_API_URL || "http://localhost:3002"}/api`;
 
@@ -189,26 +192,16 @@ export default function Home() {
     if (!activeChat) setMobileOpen(false);
   }, [activeChat]);
 
-  // ---------- socket connection ----------
+  // ---------- socket connection (+ live suspend / logout from admins) ----------
+  useSessionSocket(token);
+
+  // ---------- plan (Free / Plus), refreshed live after a payment ----------
+  const dispatch = useDispatch();
   useEffect(() => {
-    if (!token) {
-      socket.disconnect();
-      return;
-    }
-
-    if (socket.connected) socket.disconnect();
-
-    socket.auth = { token };
-    const onConnectError = (error) => console.error("Socket connection error:", error.message);
-
-    socket.on("connect_error", onConnectError);
-    socket.connect();
-
-    return () => {
-      socket.off("connect_error", onConnectError);
-      if (socket.connected) socket.disconnect();
-    };
-  }, [token]);
+    if (!token) return;
+    dispatch(fetchPlan(token));
+    return listen({ planUpdated: () => dispatch(fetchPlan(token)) });
+  }, [token, dispatch]);
 
   // ---------- theme ----------
   useEffect(() => {
@@ -303,7 +296,7 @@ export default function Home() {
   }, [activeChat, settingsOpen]);
 
   return (
-    <div className={`h-screen w-full flex flex-col overflow-hidden bg-(--app-bg) ${isLight ? "theme-light" : ""}`}>
+    <div className={`h-dvh w-full flex flex-col overflow-hidden bg-(--app-bg) ${isLight ? "theme-light" : ""}`}>
       <Loader />
 
       <TopBar
@@ -313,7 +306,7 @@ export default function Home() {
       />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
-        <div className={mobileOpen ? "hidden md:block" : "block"}>
+        <div className={mobileOpen ? "hidden md:block" : "block w-full md:w-auto"}>
           <Sidebar
             activeChat={activeChat}
             setActiveChat={handleSelectChat}
@@ -372,6 +365,7 @@ export default function Home() {
         themeMode={themeMode}
         onThemeChange={handleThemeChange}
       />
+      <UpgradeModal />
     </div>
   );
 }

@@ -2,10 +2,12 @@ import { configureStore } from "@reduxjs/toolkit";
 
 import authReducer from "./authSlice";
 import apiLoadingReducer from "./apiLoadingSlice";
+import planReducer from "./planSlice";
 
 export const store = configureStore({
   reducer: {
     auth: authReducer,
     apiLoading: apiLoadingReducer,
+    plan: planReducer,
   },
 });

@@ -17,8 +17,10 @@ import {
   Copy,
 } from "lucide-react";
 import { useState, useRef, useEffect, useMemo, Fragment } from "react";
-import { useSelector } from "react-redux";
+import { useDispatch, useSelector } from "react-redux";
 import { isSameDay } from "date-fns";
+import { openUpgrade } from "../../redux/planSlice";
+import PlusTag from "../Plus/PlusTag";
 import socket from "../../socket";
 import { listen } from "../../utils/socketListen";
 import useCall from "../../hooks/useCall";
@@ -62,7 +64,7 @@ const MATCH_BUTTONS = [
 
 const iconBtn = "rounded-lg p-1.5 hover:bg-white/5 hover:text-white transition";
 const pickerBtn =
-  "hidden sm:flex items-center justify-center mb-2.5 text-gray-400 hover:text-white transition shrink-0";
+  "flex items-center justify-center mb-2.5 text-gray-400 hover:text-white transition shrink-0";
 
 const sameId = (a, b) => Number(a) === Number(b);
 
@@ -119,6 +121,9 @@ export default function ChatWindow({
   const messagesRef = useRef([]);
   const undoTimerRef = useRef(null);
   const { user, token } = useSelector((state) => state.auth);
+  const plan = useSelector((state) => state.plan);
+  const dispatch = useDispatch();
+  const needsPlus = (feature) => dispatch(openUpgrade(feature));
   const isGroup = activeChat?.type === "GROUP";
 
   // ---------- calls ----------
@@ -581,6 +586,7 @@ export default function ChatWindow({
   // ---------- chat summary ----------
   const handleSummarize = async () => {
     if (summarizing) return;
+    if (plan.loaded && !plan.isPlus) return needsPlus("Summarize");
     if (!activeChat?.conversationId) {
       setSummary("Send a message first, then summarize this chat.");
       return;
@@ -593,16 +599,18 @@ export default function ChatWindow({
         conversationId: activeChat.conversationId,
       });
       setSummary((data.summary || "").replace(/\*\*/g, ""));
-    } catch {
+    } catch (error) {
+      if (error.code === "PLUS_REQUIRED") return needsPlus("Summarize");
       setSummary("Could not summarize this chat. Try again.");
     } finally {
       setSummarizing(false);
     }
   };
 
-  // hide the summary when you open another chat
+  // hide the summary (and any unsent media preview) when you open another chat
   useEffect(() => {
     setSummary("");
+    setPendingFiles(null);
   }, [activeChat?.id]);
 
   useEffect(() => {
@@ -669,6 +677,8 @@ export default function ChatWindow({
     if (!file) return;
     if (file.size > MAX_FILE_SIZE)
       return showUploadError("File is too large (max 50MB)");
+    // Free: 10 MB, Plus: 50 MB (the server checks this too)
+    if (file.size > plan.limits.maxFileMB * 1024 * 1024) return needsPlus("Large files");
 
     // View-once applies only to photos, videos, and voice notes.
    const sendViewOnce =
@@ -691,7 +701,8 @@ export default function ChatWindow({
           ...(opts.caption ? { body: opts.caption } : {}),
         });
       } catch (error) {
-        showUploadError(error.message || "File upload failed");
+        if (error.code === "PLUS_REQUIRED") needsPlus(error.feature);
+        else showUploadError(error.message || "File upload failed");
       } finally {
         setUploadProgress(null);
       }
@@ -723,7 +734,9 @@ Object.entries(target).forEach(([key, value]) =>
 
       let text = "Upload failed";
       try {
-        text = JSON.parse(xhr.responseText).error || text;
+        const body = JSON.parse(xhr.responseText);
+        if (body.code === "PLUS_REQUIRED") return needsPlus(body.feature);
+        text = body.error || text;
       } catch {
         // keep the default text
       }
@@ -736,7 +749,19 @@ Object.entries(target).forEach(([key, value]) =>
     };
 
     if (!duration) setUploadProgress(0); // no progress bar for voice notes
-    xhr.send(formData);
+    // wait for the upload so several files arrive in the order they were picked
+    await new Promise((resolve) => {
+      xhr.onloadend = resolve;
+      xhr.send(formData);
+    });
+  };
+
+  // "Send" in the media preview window
+  const sendPendingFiles = async (items, viewOnce) => {
+    setPendingFiles(null);
+    for (const { file, caption } of items) {
+      await uploadFile(file, undefined, { viewOnce, caption });
+    }
   };
 
   const handlePaste = (event) => {
@@ -757,9 +782,9 @@ Object.entries(target).forEach(([key, value]) =>
   };
 
   // ---------- voice notes ----------
-  const sendVoice = (file, duration) => {
+  const sendVoice = (file, duration, viewOnce) => {
     setRecording(false);
-    uploadFile(file, duration);
+    uploadFile(file, duration, { viewOnce });
   };
 
   const cancelVoice = (errorText) => {
@@ -895,7 +920,7 @@ Object.entries(target).forEach(([key, value]) =>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 sm:gap-4 text-gray-400 shrink-0">
+        <div className="flex items-center gap-1 sm:gap-4 text-gray-400 shrink-0">
           {CALL_BUTTONS.map(({ Icon, label, callType }) => (
             <button
               key={label}
@@ -903,7 +928,7 @@ Object.entries(target).forEach(([key, value]) =>
               onClick={() => calls.startCall(callType)}
               aria-label={label}
               title={isGroup ? `${label} with group` : label}
-              className={`hidden sm:flex items-center justify-center ${iconBtn}`}
+              className={`flex items-center justify-center ${iconBtn}`}
             >
               <Icon size={18} />
             </button>
@@ -919,6 +944,7 @@ Object.entries(target).forEach(([key, value]) =>
           >
             <Sparkles size={15} />
             <span className="hidden sm:inline">Summarize</span>
+            {plan.loaded && !plan.isPlus && <PlusTag className="max-sm:hidden" />}
           </button>
           <button
             type="button"
@@ -1342,6 +1368,15 @@ Object.entries(target).forEach(([key, value]) =>
             setShowCamera(false);
             setPendingFiles([file]);
           }}
+          onClose={() => setShowCamera(false)}
+        />
+      )}
+      {pendingFiles && (
+        <MediaPreviewModal
+          files={pendingFiles}
+          chatName={activeChat.name}
+          onClose={() => setPendingFiles(null)}
+          onSend={sendPendingFiles}
         />
       )}
       <CallOverlay {...calls} />

@@ -4,6 +4,7 @@ const cloudinary = require("../config/cloudinary");
 const { getMessageType, ALLOWED } = require("../middleware/upload");
 const { toPayload, touchConversation } = require("../socket/message.socket");
 const sanitizeMessage = require("../utils/sanitizeMessage"); // NEW
+const { getPlanUser, limitsFor } = require("../services/plans");
 
 const SENDER_SELECT = { id: true, name: true, avatarUrl: true };
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
@@ -14,7 +15,11 @@ const fail = (status, error) => {
 };
 
 const sendError = (res, error, label) => {
-  if (error.status) return res.status(error.status).json({ error: error.message });
+  if (error.status) {
+    return res
+      .status(error.status)
+      .json({ error: error.message, ...(error.code ? { code: error.code, feature: error.feature } : {}) });
+  }
   console.error(label, error);
   return res.status(500).json({ error: "Internal server error" });
 };
@@ -25,6 +30,22 @@ const wantsViewOnce = (value) => value === true || value === "true";
 // View-once is supported for photos, videos, and voice messages.
 const canBeViewOnce = (messageType) =>
   ["IMAGE", "VIDEO", "AUDIO"].includes(messageType);
+
+// View-once media has no caption: the text would stay visible after the media is gone
+const captionFor = (body, viewOnce) =>
+  !viewOnce && typeof body === "string" && body.trim() ? body.trim() : null;
+
+// Free: 10 MB per file, Plus: 50 MB. 402 tells the app to show the Upgrade window.
+const checkFileSize = async (userId, bytes) => {
+  const { maxFileMB } = limitsFor(await getPlanUser(userId));
+  if (bytes > maxFileMB * 1024 * 1024) {
+    throw Object.assign(new Error(`Files over ${maxFileMB} MB need Talkora Plus`), {
+      status: 402,
+      code: "PLUS_REQUIRED",
+      feature: "Large files",
+    });
+  }
+};
 
 // Finds the direct conversation between two users, or creates it
 const findOrCreateConversation = async (userA, userB) =>
@@ -170,21 +191,23 @@ const sendFileMessage = async (req, res) => {
 
   try {
     if (!file) fail(400, "No file uploaded");
+    await checkFileSize(req.user.id, file.size);
 
     const { body, duration } = req.body;
     const chat = await resolveChat(req.user.id, req.body);
 
     const messageType = getMessageType(file.mimetype); // NEW: stored in a variable
+    const viewOnce = wantsViewOnce(req.body.viewOnce) && canBeViewOnce(messageType);
 
     const payload = await saveAndDeliver(req, chat, {
-      body: body?.trim() || null, // optional caption
+      body: captionFor(body, viewOnce), // optional caption
       messageType,
       fileUrl: `/uploads/${file.filename}`,
       fileName: file.originalname,
       fileSize: file.size,
       mimeType: file.mimetype,
       duration: Number(duration) > 0 ? Math.round(Number(duration)) : null, // voice notes
-      viewOnce: wantsViewOnce(req.body.viewOnce) && canBeViewOnce(messageType), // NEW
+      viewOnce,
     });
 
     return res.status(201).json({ message: payload });
@@ -229,13 +252,24 @@ const sendCloudinaryFile = async (req, res) => {
       fail(400, "Cloudinary file is invalid or too large");
     }
 
+    try {
+      await checkFileSize(req.user.id, asset.bytes);
+    } catch (error) {
+      // don't keep a file the user isn't allowed to send
+      cloudinary.uploader.destroy(asset.public_id, { resource_type: resourceType }).catch(() => {});
+      throw error;
+    }
+
+    const viewOnce = wantsViewOnce(req.body.viewOnce) && canBeViewOnce(messageType);
+
     const payload = await saveAndDeliver(req, chat, {
+      body: captionFor(req.body.body, viewOnce),
       messageType,
       fileUrl: asset.secure_url,
       fileName: fileName.trim(),
       fileSize: asset.bytes,
       mimeType,
-      viewOnce: wantsViewOnce(req.body.viewOnce) && canBeViewOnce(messageType), // NEW
+      viewOnce,
     });
 
     return res.status(201).json({ message: payload });

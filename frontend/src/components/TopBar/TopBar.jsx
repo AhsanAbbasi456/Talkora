@@ -1,11 +1,17 @@
 import logo from "../../assets/images/logo.png";
-import { Bell, Settings, PanelLeft } from "lucide-react";
+import { Link } from "react-router-dom";
+import { useSelector } from "react-redux";
+import { Bell, Settings, PanelLeft, ShieldCheck, Sparkles } from "lucide-react";
 
 export default function TopBar({
   onToggleSidebar,
   onOpenSettings,
   totalUnreadCount = 0,
 }) {
+  const role = useSelector((state) => state.auth.user?.role);
+  const isAdmin = role === "ADMIN";
+  const { loaded: planLoaded, isPlus } = useSelector((state) => state.plan);
+
   return (
     <header className="h-12 w-full flex items-center justify-between px-2 sm:px-4 bg-(--panel-bg) border-b border-(--border) shrink-0">
       <div className="flex items-center gap-2 sm:gap-3 min-w-0">
@@ -32,6 +38,30 @@ export default function TopBar({
       </div>
 
       <div className="flex items-center gap-1 sm:gap-2 text-(--text-muted) shrink-0">
+        {planLoaded && (
+          <Link
+            to={isPlus ? "/billing" : "/upgrade"}
+            title={isPlus ? "Talkora Plus · billing" : "Upgrade to Talkora Plus"}
+            className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition ${
+              isPlus
+                ? "bg-gradient-to-r from-amber-400 to-orange-500 text-white"
+                : "border border-orange-400/60 text-orange-500 hover:bg-orange-500/10"
+            }`}
+          >
+            <Sparkles size={14} />
+            <span className={isPlus ? "" : "hidden sm:inline"}>{isPlus ? "Plus" : "Upgrade"}</span>
+          </Link>
+        )}
+        {isAdmin && (
+          <Link
+            to="/admin"
+            className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-(--accent) hover:bg-(--border) transition"
+            title="Admin page"
+          >
+            <ShieldCheck size={18} />
+            <span className="hidden sm:inline">Admin</span>
+          </Link>
+        )}
         <button
           type="button"
           className="hidden sm:block relative rounded-lg p-2 hover:bg-(--border) hover:text-(--text-primary) transition"

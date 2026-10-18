@@ -20,7 +20,13 @@ const registerCallSocket = require("./src/socket/call.socket");
 const app = express();
 const PORT = Number(process.env.PORT || 3002);
 const MAX_PORT_ATTEMPTS = 10;
-   const viewOnceRoutes = require("./src/routes/viewOnce.routes");
+const viewOnceRoutes = require("./src/routes/viewOnce.routes");
+const adminRoutes = require("./src/routes/admin.routes");
+const { isAdminRole, refreshStatus, blockedResponse } = require("./src/utils/access");
+const { startViewOnceExpiry } = require("./src/utils/viewOnceMedia");
+const { ensureBot } = require("./src/services/botAccount");
+const paymentsRoutes = require("./src/routes/payments.routes");
+const { startPaymentJobs } = require("./src/services/payments/jobs");
 
 
 // ==========================================
@@ -46,6 +52,8 @@ app.use("/api/messages", messageRoutes);
 app.use("/api/smart-replies", smartReplyRoutes);
 app.use("/api/ai", aiRoutes);
 app.use("/api", viewOnceRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/payments", paymentsRoutes);
 // ==========================================
 // HEALTH CHECK
 // ==========================================
@@ -104,32 +112,46 @@ function registerSocketServer(httpServer) {
     pingTimeout: 5000, // wait 5 seconds for a reply
   });
 
-  io.on("connection", (socket) => {
+  // Runs before every connection: valid token, current token version, approved account.
+  // A blocked user gets connect_error with err.data explaining why.
+  io.use(async (socket, next) => {
     try {
-      // Get JWT token sent by React
       const token = socket.handshake.auth?.token;
+      if (!token) return next(new Error("NO_TOKEN"));
 
-      if (!token) {
-        console.log("Socket connection rejected: No token");
-        socket.disconnect();
-        return;
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      if (decoded.purpose) return next(new Error("SESSION_EXPIRED")); // not a login token
+
+      let user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+      if (!user || (decoded.tv ?? 0) !== user.tokenVersion) {
+        return next(new Error("SESSION_EXPIRED"));
       }
 
-      // Verify JWT token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      user = await refreshStatus(user);
+      if (user.status !== "APPROVED") {
+        const err = new Error("ACCOUNT_BLOCKED");
+        err.data = blockedResponse(user);
+        return next(err);
+      }
 
-      // Save user id on the socket and join the user's private room
-      socket.userId = decoded.userId;
-      socket.join(`user:${socket.userId}`);
-
-      // Register all socket features
-      registerMessageSocket(io, socket);
-      registerPresenceSocket(io, socket);
-      registerCallSocket(io, socket);
+      socket.userId = user.id;
+      socket.isAdmin = isAdminRole(user.role);
+      next();
     } catch (error) {
       console.error("Socket authentication failed:", error.message);
-      socket.disconnect();
+      next(new Error("SESSION_EXPIRED"));
     }
+  });
+
+  io.on("connection", (socket) => {
+    // Join the user's private room
+    socket.join(`user:${socket.userId}`);
+    if (socket.isAdmin) socket.join("admins"); // live updates for the admin page
+
+    // Register all socket features
+    registerMessageSocket(io, socket);
+    registerPresenceSocket(io, socket);
+    registerCallSocket(io, socket);
   });
 
   return io;
@@ -179,10 +201,16 @@ function startServer(port, attempt = 1) {
   });
 
   httpServer.listen(port, () => {
+    startViewOnceExpiry(io);
+    startPaymentJobs();
     const preferredPort = Number(process.env.PORT || 3000);
     const messagePort = port !== preferredPort ? ` (fallback from ${preferredPort})` : "";
     console.log(`Server running on http://localhost:${port}${messagePort}`);
   });
 }
 
-startServer(PORT);
+// Make sure the Talkora AI account exists before chats start
+ensureBot()
+  .then((account) => console.log(`Talkora AI ready (user ${account.id})`))
+  .catch((err) => console.error("Could not set up Talkora AI:", err.message))
+  .finally(() => startServer(PORT));

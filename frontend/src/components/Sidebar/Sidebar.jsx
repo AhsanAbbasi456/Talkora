@@ -222,11 +222,11 @@ export default function Sidebar({
       if (!isGroupMessage) clearTyping(otherId);
 
       setConversations((prev) => {
-        const existing = prev.find((c) =>
-          isGroupMessage
-            ? c.type === "GROUP" && Number(c.conversationId) === conversationId
-            : Number(c.otherUser?.id) === otherId,
-        );
+        // match by chat first: a Talkora AI answer to an @mention is sent by the bot
+        // but belongs to the chat it was asked in, not to the Talkora AI chat
+        const existing =
+          prev.find((c) => Number(c.conversationId) === conversationId) ||
+          (!isGroupMessage && prev.find((c) => Number(c.otherUser?.id) === otherId));
 
         if (!existing) {
           if (Number(message.count) > 0) {
@@ -439,7 +439,7 @@ export default function Sidebar({
   return (
     <div
       className={`h-full flex flex-col bg-(--panel-bg) border-r border-(--border) shrink-0 transition-all duration-200 ${
-        collapsed ? "w-19" : "w-full sm:w-[300px] lg:w-[320px]"
+        collapsed ? "w-19" : "w-full md:w-[300px] lg:w-[320px]"
       }`}
     >
       {/* SEARCH */}
